@@ -104,6 +104,56 @@ def extract_balance(text: str):
     b = first_group(p_balance, text)
     return b.replace(",", "") if b else None
 
+
+def extract_avl_limit(text: str):
+    """
+    Extract the Available Credit Limit from a credit-card spend SMS.
+    Handles patterns like:
+      "Avl Limit: INR 69,404.64"
+      "Available Limit: Rs 50000"
+      "Avl Lmt INR 1,23,456.78"
+    Returns numeric string without commas, or None.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    p = (
+        r"(?:avl|avail(?:able)?)\s*li?mi?t[:\s]*"
+        r"(?:(?:inr|rs)\.?\s*)?"
+        r"([\d,]+(?:\.\d{1,2})?)"
+    )
+    m = re.search(p, text, re.I)
+    if m:
+        return m.group(1).replace(",", "")
+    return None
+
+
+def extract_last_bill(text: str):
+    """
+    Extract the total bill/statement due amount from a credit-card statement SMS.
+    Handles patterns like:
+      "Total of Rs 9,977.40 or minimum of Rs 500.00 is due by 23-MAY-25"
+      "Your bill of INR 5,430 is due"
+      "Total Amount Due: INR 12,345.67"
+    Returns numeric string without commas, or None.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    patterns = [
+        # "Total of Rs 9,977.40 ... is due"
+        r"total\s+of\s+(?:rs|inr)\.?\s*([\d,]+(?:\.\d{1,2})?)",
+        # "Total Amount Due: INR 12,345"
+        r"total\s+(?:amount\s+)?due[:\s]+(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
+        # "bill of INR 5,430"
+        r"bill\s+(?:amount\s+)?(?:of\s+)?(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
+        # "Amount Due Rs 4,000"
+        r"amount\s+due[:\s]+(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.I)
+        if m:
+            return m.group(1).replace(",", "")
+    return None
+
 # -----------------------------
 # 5) Your payer/payee + subtype functions can remain
 # (keeping minimal changes)
@@ -264,6 +314,9 @@ def parse_transaction(body, address):
     subtype = get_transaction_subtype(t, txn_type, mandate_flag, channel, product)
     payer, payee = extract_payer_payee(t)
 
+    avl_limit = extract_avl_limit(t)
+    last_bill  = extract_last_bill(t)
+
     return {
         "SenderID": address,
         "Financial Product": product,
@@ -271,6 +324,8 @@ def parse_transaction(body, address):
         "Transaction Subtype": subtype,
         "Amount": amount,
         "Balance": balance,
+        "Avl Limit": avl_limit,
+        "Last Bill": last_bill,
         "Payee": payee,
         "Reference Number": ref,
         "Card Number": card_number,
@@ -293,8 +348,9 @@ def analyze_transactions(df):
     if trans_df.empty:
         cols = [
             "_id","date","SenderID","Financial Product","Transaction Type","Transaction Subtype",
-            "Amount","Balance","Payee","Reference Number","Card Number","Account Number",
-            "Transaction Channel","Context","Mandate Flag","body","bank_name"
+            "Amount","Balance","Avl Limit","Last Bill","Payee","Reference Number",
+            "Card Number","Account Number","Transaction Channel","Context","Mandate Flag",
+            "body","bank_name"
         ]
         return pd.DataFrame(columns=cols)
 
@@ -310,8 +366,9 @@ def analyze_transactions(df):
 
     cols = [
         "_id","date","SenderID","Financial Product","Transaction Type","Transaction Subtype",
-        "Amount","Balance","Payee","Reference Number","Card Number","Account Number",
-        "Transaction Channel","Context","Mandate Flag","body","bank_name"
+        "Amount","Balance","Avl Limit","Last Bill","Payee","Reference Number",
+        "Card Number","Account Number","Transaction Channel","Context","Mandate Flag",
+        "body","bank_name"
     ]
     parsed = parsed[[c for c in cols if c in parsed.columns]]
 

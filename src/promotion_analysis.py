@@ -97,10 +97,19 @@ def analyze_promotions(df):
         print("Required columns ('address' or 'body') not found in the Dataframe.")
         return pd.DataFrame(), df, "No promo analysis: missing columns"
 
-    # Separate Promotional vs Rest
+    # Separate Promotional vs Rest (initially by sender suffix)
     mask_promo = df['address'].str.endswith('-P', na=False)
-    promo_df = df[mask_promo]
-    rest_df = df[~mask_promo]
+    promo_df = df[mask_promo].copy()
+    rest_df = df[~mask_promo].copy()
+
+    # Move any marketing/offer messages from rest_df into promo_df
+    # (Catches promotional SMS sent by normal/transactional sender IDs)
+    mask_hidden_promo = rest_df['body'].apply(is_offer_or_marketing)
+    hidden_promos = rest_df[mask_hidden_promo].copy()
+    
+    if not hidden_promos.empty:
+        promo_df = pd.concat([promo_df, hidden_promos], ignore_index=True)
+        rest_df = rest_df[~mask_hidden_promo].copy()
 
     # Generate stats report string
     report_dict = get_promotion_stats(promo_df)

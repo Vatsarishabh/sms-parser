@@ -90,16 +90,26 @@ def build_account_details(df: pd.DataFrame) -> tuple:
     """
     Returns (bank_account_details, credit_card_details).
 
-    Each entry:
-      bank accounts :
-        { "account_number": str, "balance": {"currency": "INR", "value": float | None}, "updated_at": str | None }
-      credit cards  :
-        { "credit_card_number": str, "balance": {"currency": "INR", "value": float | None}, "updated_at": str | None }
+    Bank account schema:
+      {
+        "account_number": str,
+        "balance": {"currency": "INR", "value": float|None, "updated_at": str|None}
+      }
+
+    Credit card schema:
+      {
+        "credit_card_number": str,
+        "balance":        {"currency": "INR", "value": float|None, "updated_at": str|None},
+        "last_bill":      {"currency": "INR", "value": float|None, "updated_at": str|None},
+        "credit_limit":   {"currency": "INR", "value": float|None, "updated_at": str|None},
+        "utilisation_pct": float|None
+      }
 
     Strategy:
-      - For each unique account/card number keep the ROW with the most-recent date.
-      - Balance is taken from 'Balance' column (already cleaned to numeric string by transaction parser).
-      - updated_at is the ISO-8601 string of that row's date.
+      balance.value      = MAX 'Avl Limit' seen for that card
+      last_bill.value    = 'Last Bill' from most-recent statement SMS
+      credit_limit.value = same MAX Avl Limit (best SMS proxy)
+      utilisation_pct    = last_bill / credit_limit
     """
     bank_details: list = []
     card_details: list = []
@@ -126,47 +136,108 @@ def build_account_details(df: pd.DataFrame) -> tuple:
         df = df.copy()
         df["date_dt"] = pd.to_datetime(df.get("date"), unit="ms", errors="coerce")
 
-    acct_col   = "Account Number"
-    bal_col    = "Balance"
-    prod_col   = "Financial Product"
-    date_col   = "date_dt"
-
-    if acct_col not in df.columns:
+    if "Account Number" not in df.columns:
         return bank_details, card_details
 
     cleaned = df.copy()
     cleaned["_acct"] = (
-        cleaned[acct_col]
+        cleaned["Account Number"]
         .astype(str).str.strip()
         .replace(["None", "", "nan", "NaN"], np.nan)
     )
     cleaned = cleaned.dropna(subset=["_acct"])
+    cleaned = cleaned.sort_values("date_dt", ascending=False, na_position="last")
+    is_cc   = cc_like_mask(cleaned)
 
-    # latest row per account
-    cleaned = cleaned.sort_values(date_col, ascending=False, na_position="last")
-    latest  = cleaned.drop_duplicates(subset=["_acct"], keep="first")
+    # ── BANK ACCOUNTS: group all rows, pick last-known non-null balance ───────
+    bank_rows = cleaned[~is_cc]
+    for acct_num, grp in bank_rows.groupby("_acct", sort=False):
+        # grp is already sorted newest-first
+        bal_numeric = (
+            pd.to_numeric(grp["Balance"], errors="coerce").dropna()
+            if "Balance" in grp.columns else pd.Series(dtype=float)
+        )
+        if not bal_numeric.empty:
+            # most-recent row that actually reported a balance
+            bal_val  = float(bal_numeric.iloc[0])
+            bal_idx  = bal_numeric.index[0]
+            bal_date = _iso(grp.at[bal_idx, "date_dt"])
+        else:
+            bal_val  = None
+            bal_date = _iso(grp["date_dt"].iloc[0]) if not grp.empty else None
 
-    # split bank vs card
-    is_cc = cc_like_mask(latest)
-
-    for _, row in latest[~is_cc].iterrows():
         bank_details.append({
-            "account_number": row["_acct"],
+            "account_number": acct_num,
             "balance": {
-                "currency": "INR",
-                "value":    _to_float(row.get(bal_col)) if bal_col in row else None,
+                "currency":   "INR",
+                "value":      bal_val,
+                "updated_at": bal_date,
             },
-            "updated_at": _iso(row.get(date_col)),
         })
 
-    for _, row in latest[is_cc].iterrows():
+    # credit cards: aggregate across all rows per card number
+    cc_rows = cleaned[is_cc]
+    for card_num, grp in cc_rows.groupby("_acct", sort=False):
+        # grp is newest-first
+
+        # credit_limit = MAX Avl Limit ever seen (historical peak = best proxy for true limit)
+        # balance      = LATEST non-null Avl Limit (current available balance)
+        avl_numeric = (
+            pd.to_numeric(grp["Avl Limit"], errors="coerce").dropna()
+            if "Avl Limit" in grp.columns else pd.Series(dtype=float)
+        )
+        if not avl_numeric.empty:
+            # credit_limit: max across all history
+            max_avl_val  = float(avl_numeric.max())
+            max_avl_idx  = avl_numeric.idxmax()
+            max_avl_date = _iso(grp.at[max_avl_idx, "date_dt"])
+            # balance: most-recent reported avl limit (iloc[0] = newest-first)
+            latest_avl_val  = float(avl_numeric.iloc[0])
+            latest_avl_idx  = avl_numeric.index[0]
+            latest_avl_date = _iso(grp.at[latest_avl_idx, "date_dt"])
+        else:
+            max_avl_val     = None
+            max_avl_date    = None
+            latest_avl_val  = None
+            latest_avl_date = None
+
+        # last_bill = most-recent non-null Last Bill
+        bill_numeric = (
+            pd.to_numeric(grp["Last Bill"], errors="coerce").dropna()
+            if "Last Bill" in grp.columns else pd.Series(dtype=float)
+        )
+        if not bill_numeric.empty:
+            last_bill_val  = float(bill_numeric.iloc[0])
+            last_bill_idx  = bill_numeric.index[0]
+            last_bill_date = _iso(grp.at[last_bill_idx, "date_dt"])
+        else:
+            last_bill_val  = None
+            last_bill_date = None
+
+        # utilisation = last_bill / credit_limit
+        if last_bill_val is not None and max_avl_val and max_avl_val > 0:
+            utilisation_pct = round(last_bill_val / max_avl_val, 4)
+        else:
+            utilisation_pct = None
+
         card_details.append({
-            "credit_card_number": row["_acct"],
+            "credit_card_number": card_num,
             "balance": {
-                "currency": "INR",
-                "value":    _to_float(row.get(bal_col)) if bal_col in row else None,
+                "currency":   "INR",
+                "value":      latest_avl_val,   # most-recent available balance
+                "updated_at": latest_avl_date,
             },
-            "updated_at": _iso(row.get(date_col)),
+            "last_bill": {
+                "currency":   "INR",
+                "value":      last_bill_val,
+                "updated_at": last_bill_date,
+            },
+            "credit_limit": {
+                "currency":   "INR",
+                "value":      max_avl_val,       # historical max = true limit proxy
+                "updated_at": max_avl_date,
+            },
+            "utilisation_pct": utilisation_pct,
         })
 
     return bank_details, card_details

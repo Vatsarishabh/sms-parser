@@ -79,9 +79,9 @@ def _random_limit_flag() -> int:
     return random.choices([0, 1], weights=[70, 30])[0]
 
 
-def _random_limit_change_recency() -> int | None:
-    """Days since last limit change; None if the change never happened."""
-    return random.randint(1, 365) if random.random() > 0.4 else None
+def _random_limit_change_recency(vintage: int) -> int:
+    """Days since last limit change. Cannot be older than the account itself."""
+    return random.randint(1, min(365, vintage))
 
 
 # ---------------------------------------------------------------------------
@@ -147,12 +147,13 @@ def _build_product_block(prefix: str, has_credit_limit: bool = True) -> dict:
 
     # flag = 1: at least 1 account must exist
     cnt_accounts = random.randint(1, 3)   # capped at 1 per user config
+    vintage = _random_vintage()
 
     block = {
         f"{prefix}_flag":         1,
         f"{prefix}_cnt_accounts": cnt_accounts,
         f"{prefix}_sms_recency":  _random_recency(),
-        f"{prefix}_sms_vintage":  _random_vintage(),
+        f"{prefix}_sms_vintage":  vintage,
     }
 
     # Limit-change features (gcredit & ggives only) – only possible when active
@@ -161,9 +162,9 @@ def _build_product_block(prefix: str, has_credit_limit: bool = True) -> dict:
         limit_inc = _random_limit_flag()
         block.update({
             f"{prefix}_limit_decrease":          limit_dec,
-            f"{prefix}_limit_decreased_recency": _random_limit_change_recency() if limit_dec else None,
+            f"{prefix}_limit_decreased_recency": _random_limit_change_recency(vintage) if limit_dec else None,
             f"{prefix}_limit_increase":          limit_inc,
-            f"{prefix}_limit_increased_recency": _random_limit_change_recency() if limit_inc else None,
+            f"{prefix}_limit_increased_recency": _random_limit_change_recency(vintage) if limit_inc else None,
         })
 
     # Account-level details – only for accounts that exist
@@ -196,48 +197,56 @@ def generate_loan_insights() -> dict:
     insights: dict = {}
 
     # ── Step 1: build branded product blocks ─────────────────────────────────
-    gcredit_block = _build_product_block("gcredit", has_credit_limit=True)
-    ggives_block  = _build_product_block("ggives",  has_credit_limit=True)
-    gloan_block   = _build_product_block("gloan",   has_credit_limit=False)
+    credit_block = _build_product_block("credit", has_credit_limit=True)
+    # ggives_block  = _build_product_block("ggives",  has_credit_limit=True)
+    # gloan_block   = _build_product_block("gloan",   has_credit_limit=False)
 
-    insights.update(gcredit_block)
-    insights.update(ggives_block)
-    insights.update(gloan_block)
+    insights.update(credit_block)
+    # insights.update(ggives_block)
+    # insights.update(gloan_block)
 
     # ── Step 2: derive totals from actual account data ────────────────────────
     total_accounts = (
-        gcredit_block.get("gcredit_cnt_accounts", 0) +
-        ggives_block.get("ggives_cnt_accounts",   0) +
-        gloan_block.get("gloan_cnt_accounts",     0)
+        credit_block.get("credit_cnt_accounts", 0) 
+        # ggives_block.get("ggives_cnt_accounts",   0) +
+        # gloan_block.get("gloan_cnt_accounts",     0)
     )
     any_active = total_accounts > 0
 
     # ── Step 3: primary loan EMI = acc1 EMI of first active product ───────────
     # This avoids a phantom 4th independent EMI that has no backing account.
     primary_emi = None
-    for prefix in ("gcredit", "ggives", "gloan"):
+    # for prefix in ("gcredit", "ggives", "gloan"):
+    for prefix in ["credit"]:
         if insights.get(f"{prefix}_flag") == 1:
             primary_emi = insights.get(f"{prefix}_acc1_emi")
             break
     insights["emi_loan_acc1"] = primary_emi
 
     # ── Step 4: delinquency / overdue – bounded by active accounts ────────────
-    if not any_active:
-        # No accounts → nothing can be delinquent or overdue
-        insights["cnt_delinquncy_loan_c30"] = 0
-        insights["cnt_delinquncy_loan_c60"] = 0
-        insights["cnt_overdue_senders_c60"] = 0
-        insights["cnt_loan_approved_c30"]   = 0
-        insights["cnt_loan_rejected_c30"]   = 0
-    else:
-        # Delinquent accounts cannot exceed total accounts
-        c30 = random.randint(0, min(total_accounts, 2))
-        c60 = random.randint(c30, min(total_accounts, c30 + 1))   # c60 >= c30
-        insights["cnt_delinquncy_loan_c30"] = c30
-        insights["cnt_delinquncy_loan_c60"] = c60
-        insights["cnt_overdue_senders_c60"] = random.randint(0, min(total_accounts, 2))
-        # Approvals / rejections: loan applications in window (≥1 since user is active)
-        insights["cnt_loan_approved_c30"]   = random.randint(0, 2)
-        insights["cnt_loan_rejected_c30"]   = random.randint(0, 1)
+    c30_delinq = 0
+    c60_delinq = 0
+    approvals_c30 = 0
+
+    if any_active:
+        # If the account vintage itself is <= 30 days, count as a recent approval
+        vintage = insights.get("credit_sms_vintage")
+        if vintage and vintage <= 30:
+            approvals_c30 = total_accounts
+
+        for i in range(1, total_accounts + 1):
+            dpd = insights.get(f"credit_acc{i}_max_dpd", 0)
+            if 0 < dpd <= 30:
+                c30_delinq += 1
+                c60_delinq += 1
+            elif dpd > 30:
+                c60_delinq += 1
+
+    insights["cnt_delinquncy_loan_c30"] = c30_delinq
+    insights["cnt_delinquncy_loan_c60"] = c60_delinq
+    insights["cnt_overdue_senders_c60"] = c60_delinq  # directly mapping overdue senders to delinquent active accounts
+    
+    insights["cnt_loan_approved_c30"]   = approvals_c30
+    insights["cnt_loan_rejected_c30"]   = random.randint(0, 1) if any_active else 0
 
     return insights

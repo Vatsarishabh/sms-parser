@@ -55,7 +55,7 @@ def r2(val, fallback=None):
 
 
 # META
-def build_meta(df_raw, df_promo, df_rest,
+def build_meta(df_raw, df_promo, df_rest, df_tagged,
                invest_insights, insur_insights, shop_insights, unified_insights):
 
     processed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -77,13 +77,21 @@ def build_meta(df_raw, df_promo, df_rest,
         "unified_persona": unified_insights is not None,
     }
 
+    # Count categories from df_tagged
+    category_counts = {}
+    if df_tagged is not None and "sms_category" in df_tagged.columns:
+        counts = df_tagged["sms_category"].value_counts().to_dict()
+        category_counts = {str(k).lower().replace(" ", "_"): int(v) for k, v in counts.items()}
+    else:
+        category_counts = {"transactional_processed": len(df_rest)}
+
     return {
         "processed_at": processed_at,
         "date_range":   date_range,
         "sms_counts": {
-            "total_received":          len(df_raw),
-            "promotional_filtered":    len(df_promo),
-            "transactional_processed": len(df_rest),
+            "total_received":       len(df_raw),
+            "promotional_filtered": len(df_promo),
+            **category_counts
         },
         "unique_senders":   int(df_raw["address"].nunique()) if "address" in df_raw.columns else 0,
         "domains_analyzed": [d for d, ok in domain_status.items() if ok],
@@ -146,7 +154,33 @@ def fmt_banking(b: dict):
     last_month = b.get("last_month", {})
 
     bank_details = b.get("bank_account_details", [])
-    card_details = b.get("credit_card_details", [])
+    raw_card_details = b.get("credit_card_details", [])
+
+    # Filter credit cards to prioritize those with actual limits/bills
+    cards_with_values = []
+    cards_empty = []
+    for c in raw_card_details:
+        v_bal   = c.get("balance", {}).get("value")
+        v_bill  = c.get("last_bill", {}).get("value")
+        v_limit = c.get("credit_limit", {}).get("value")
+        if v_bal is not None or v_bill is not None or v_limit is not None:
+            cards_with_values.append(c)
+        else:
+            cards_empty.append(c)
+
+    est_total_cc = int(overall.get("num_credit_cards", 0))
+    # Final count is either the number of valid cards we found, or the estimate (whichever is larger)
+    target_count = max(len(cards_with_values), est_total_cc)
+
+    final_cards = cards_with_values[:]
+    # If we haven't reached target_count, pad with the empty ones (just up to the count)
+    if len(final_cards) < target_count:
+        needed = target_count - len(final_cards)
+        final_cards.extend(cards_empty[:needed])
+
+    # If the padding brought us over, or we simply have the exact number, 
+    # the 'total' is always exactly the length of the final array shown.
+    final_card_count = len(final_cards)
 
     return {
         "accounts": {
@@ -155,8 +189,8 @@ def fmt_banking(b: dict):
                 "details": bank_details,
             },
             "credit_cards": {
-                "total":   int(overall.get("num_credit_cards", 0)),
-                "details": card_details,
+                "total":   final_card_count,
+                "details": final_cards,
             },
         },
         "cash_flow": {
@@ -358,9 +392,9 @@ def fmt_loan(loan: dict):
             "cnt_rejected_c30": loan.get("cnt_loan_rejected_c30"),
         },
         "primary_loan_emi": r2(loan.get("emi_loan_acc1")),
-        "gcredit": _product("gcredit", has_credit_limit=True),
-        "ggives":  _product("ggives",  has_credit_limit=True),
-        "gloan":   _product("gloan",   has_credit_limit=False),
+        "credit": _product("credit", has_credit_limit=True),
+        # "ggives":  _product("ggives",  has_credit_limit=True),
+        # "gloan":   _product("gloan",   has_credit_limit=False),
     }
 
 
@@ -413,7 +447,7 @@ def analyze(request: SMSRequest):
         loan_insights = generate_loan_insights()
 
         meta = build_meta(
-            df_raw, df_promo, df_rest,
+            df_raw, df_promo, df_rest, df_tagged,
             investment_insights, insurance_insights, shopping_insights, unified_insights
         )
 
