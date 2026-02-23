@@ -1,0 +1,99 @@
+======================================================================
+  MASTER FINANCIAL INTELLIGENCE REPORT: 360-DEGREE VIEW
+======================================================================
+
+1. PROMOTIONAL AND LENDING OFFERS
+----------------------------------------------------------------------
+--- Promotional Message Analysis Report ---
+1. Total Promotional Messages: 1405
+2. Credit Card Promotional Messages: 105
+3. Offer or Discount Messages: 199
+4. NBFC / Lending Apps Promotional Messages: 149
+5. Other Promotional Messages: 1059
+6. Average of last 5 Credit Card Limit offers: 307801.00
+7. Average of last 5 Lending App Limit offers: 584000.00
+
+2. BANKING AND CASH FLOW INTELLIGENCE
+----------------------------------------------------------------------
+
+[ GLOBAL OVERVIEW ]
+  - Accounts Hooked     : 3 Bank A/Cs | 2 Credit Cards
+  - Data Scope         : 2249 raw transactions analyzed
+  CASH FLOW SUMMARY
+    - Total Spend      : Rs.    861,389.47 (808 txns)
+    - Average Spend    : Rs.      1,066.08
+    - Total Earn       : Rs.  1,989,394.89 (170 txns)
+    - Average Earn     : Rs.     11,702.32
+  CHANNEL PERFORMANCE
+    - UPI Impact       : Rs.    548,876.80 (523 txns)
+    - UPI Ticket Size  : Rs.      1,049.48
+    - CC Utilization   : Rs.    782,739.88 (646 txns)
+    - CC Ticket Size   : Rs.      1,211.67
+    - Primary Channel  : UPI
+
+[ LAST MONTH ]
+  - Accounts Hooked     : 3 Bank A/Cs | 2 Credit Cards
+  - Data Scope         : 126 raw transactions analyzed
+  CASH FLOW SUMMARY
+    - Total Spend      : Rs.     46,329.54 (50 txns)
+    - Average Spend    : Rs.        926.59
+    - Total Earn       : Rs.        230.00 (23 txns)
+    - Average Earn     : Rs.         10.00
+  CHANNEL PERFORMANCE
+    - UPI Impact       : Rs.      8,310.00 (20 txns)
+    - UPI Ticket Size  : Rs.        415.50
+    - CC Utilization   : Rs.     26,380.54 (32 txns)
+    - CC Ticket Size   : Rs.        824.39
+    - Primary Channel  : Card
+
+3. INVESTMENT AND WEALTH INTELLIGENCE
+----------------------------------------------------------------------
+  PORTFOLIO HEALTH
+    - Net Invested Value: Rs.     19,673.03
+    - Dominant Asset    : Mutual Fund
+    - Wallet Share      : Gold: 8.1% | Mutual Fund: 91.9%
+  BEHAVIORAL SIGNALS
+    - Last Activity    : 2026-02-17 (Active)
+    - Investment Tenure: 525 days
+    - Stability Score  : High (Avg Gap: 2.6 days)
+  MANDATE AND RELIABILITY
+    - Realization Rate : 66.7%
+    - Predicted SIP Day: Day 10 of month
+    - Engagement Points: 174 verified signals
+
+4. INSURANCE AND RISK COVERAGE
+----------------------------------------------------------------------
+  POLICY HOLDINGS
+    - Total Premium Liab: Rs.     17,326.27
+    - Household Size    : 3 Members
+    - Peak Liability Qtr: Q4
+  STRATEGIC INDEX
+    - Wellness Index    : 50.0%
+    - Health/Life Ratio : 2.3
+
+5. LIFESTYLE AND SHOPPING BEHAVIOR
+----------------------------------------------------------------------
+  MONTHLY BURN (L3M)
+    - 2025-12           : Rs 3215
+    - 2026-01           : Rs 14563
+    - 2026-02           : Rs 387
+  CONSUMPTION PATTERNS
+    - Dominant Merchant : Amazon
+    - Weekend Spend Rat : 0.97
+    - Late Night Orders : 6 (Impulse Signal)
+  BEHAVIORAL SIGNALS
+    - Brand Switch Index: 0.36
+    - Payday Velocity   : 0.65 (Spend Stress)
+    - 30d Order Velocity: 17 orders
+
+6. UNIFIED PSYCHOGRAPHIC PERSONA
+----------------------------------------------------------------------
+  - User Segment       : The Impulse-Heavy Professional
+  - Disposable Health  : Strained
+  - Future-Proof Score : 85.0/100
+  - Burn-to-Build Mult : 45.30
+  - Value Hunter Level : 26.6%
+
+======================================================================
+           PROCESS COMPLETED: ALL DOMAINS ANALYZED
+======================================================================
