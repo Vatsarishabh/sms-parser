@@ -84,6 +84,95 @@ def cc_like_mask(df: pd.DataFrame) -> pd.Series:
 
 
 # =========================
+# 3b) ACCOUNT / CARD DETAILS
+# =========================
+def build_account_details(df: pd.DataFrame) -> tuple:
+    """
+    Returns (bank_account_details, credit_card_details).
+
+    Each entry:
+      bank accounts :
+        { "account_number": str, "balance": {"currency": "INR", "value": float | None}, "updated_at": str | None }
+      credit cards  :
+        { "credit_card_number": str, "balance": {"currency": "INR", "value": float | None}, "updated_at": str | None }
+
+    Strategy:
+      - For each unique account/card number keep the ROW with the most-recent date.
+      - Balance is taken from 'Balance' column (already cleaned to numeric string by transaction parser).
+      - updated_at is the ISO-8601 string of that row's date.
+    """
+    bank_details: list = []
+    card_details: list = []
+
+    if df.empty:
+        return bank_details, card_details
+
+    # helpers
+    def _to_float(v):
+        try:
+            f = float(str(v).replace(",", ""))
+            return f if pd.notna(f) else None
+        except Exception:
+            return None
+
+    def _iso(ts):
+        try:
+            return pd.Timestamp(ts).isoformat() if pd.notna(ts) else None
+        except Exception:
+            return None
+
+    # ensure date_dt exists
+    if "date_dt" not in df.columns:
+        df = df.copy()
+        df["date_dt"] = pd.to_datetime(df.get("date"), unit="ms", errors="coerce")
+
+    acct_col   = "Account Number"
+    bal_col    = "Balance"
+    prod_col   = "Financial Product"
+    date_col   = "date_dt"
+
+    if acct_col not in df.columns:
+        return bank_details, card_details
+
+    cleaned = df.copy()
+    cleaned["_acct"] = (
+        cleaned[acct_col]
+        .astype(str).str.strip()
+        .replace(["None", "", "nan", "NaN"], np.nan)
+    )
+    cleaned = cleaned.dropna(subset=["_acct"])
+
+    # latest row per account
+    cleaned = cleaned.sort_values(date_col, ascending=False, na_position="last")
+    latest  = cleaned.drop_duplicates(subset=["_acct"], keep="first")
+
+    # split bank vs card
+    is_cc = cc_like_mask(latest)
+
+    for _, row in latest[~is_cc].iterrows():
+        bank_details.append({
+            "account_number": row["_acct"],
+            "balance": {
+                "currency": "INR",
+                "value":    _to_float(row.get(bal_col)) if bal_col in row else None,
+            },
+            "updated_at": _iso(row.get(date_col)),
+        })
+
+    for _, row in latest[is_cc].iterrows():
+        card_details.append({
+            "credit_card_number": row["_acct"],
+            "balance": {
+                "currency": "INR",
+                "value":    _to_float(row.get(bal_col)) if bal_col in row else None,
+            },
+            "updated_at": _iso(row.get(date_col)),
+        })
+
+    return bank_details, card_details
+
+
+# =========================
 # 4) BASIC METRIC HELPERS
 # =========================
 def sum_amount(df: pd.DataFrame, mask: pd.Series) -> float:
@@ -283,23 +372,28 @@ def monthly_and_overall_insights(txn_df: pd.DataFrame) -> dict:
       }
     """
     df = prep_txn_df(txn_df)
-    
+
     # 1. Calculate overall insights first (ground truth for cards)
     overall = build_insights(df)
-    
+
     # 2. Slice for last month
     last_month_df = slice_last_month(df)
-    
+
     # 3. Apply HARD RULE: If overall CC count is 0, last month must be 0
     force_cc = None
     if overall.get("num_credit_cards", 0) == 0:
         force_cc = 0
-        
+
     last_month = build_insights(last_month_df, force_num_credit_cards=force_cc)
 
+    # 4. Account / card details (latest balance + updated_at per unique number)
+    bank_account_details, credit_card_details = build_account_details(df)
+
     return {
-        "last_month": last_month,
-        "overall": overall,
-        "last_month_rows": int(len(last_month_df)),
-        "overall_rows": int(len(df)),
+        "last_month":           last_month,
+        "overall":              overall,
+        "last_month_rows":      int(len(last_month_df)),
+        "overall_rows":         int(len(df)),
+        "bank_account_details": bank_account_details,
+        "credit_card_details":  credit_card_details,
     }

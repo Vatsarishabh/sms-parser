@@ -20,6 +20,7 @@ from src.investment import parse_investment_sms, generate_investment_insights
 from src.insurance import parse_insurance_sms, generate_insurance_insights
 from src.shopping_spend import parse_shopping_sms, generate_shopping_insights
 from src.in_in_sh import generate_unified_persona
+from src.loan import generate_loan_insights
 
 app = FastAPI(title="SMS Financial Parser API")
 
@@ -144,10 +145,19 @@ def fmt_banking(b: dict):
     overall    = b.get("overall", {})
     last_month = b.get("last_month", {})
 
+    bank_details = b.get("bank_account_details", [])
+    card_details = b.get("credit_card_details", [])
+
     return {
         "accounts": {
-            "bank_accounts":  int(overall.get("num_bank_accounts", 0)),
-            "credit_cards":   int(overall.get("num_credit_cards", 0)),
+            "bank_accounts": {
+                "total":   int(overall.get("num_bank_accounts", 0)),
+                "details": bank_details,
+            },
+            "credit_cards": {
+                "total":   int(overall.get("num_credit_cards", 0)),
+                "details": card_details,
+            },
         },
         "cash_flow": {
             "overall":    window(overall,    b.get("overall_rows", 0)),
@@ -304,8 +314,58 @@ def fmt_unified(uni: dict):
     }
 
 
+def fmt_loan(loan: dict):
+    """Format the flat loan-insights dict into a structured response block."""
+    if not loan:
+        return None
+    def _acc(prefix, idx):
+        s = f"_acc{idx}"
+        acc = {
+            "account_id":       loan.get(f"{prefix}{s}"),
+            "emi":              r2(loan.get(f"{prefix}{s}_emi")),
+            "emi_latest_duedate": loan.get(f"{prefix}{s}_emi_latest_duedate"),
+            "max_dpd":          loan.get(f"{prefix}{s}_max_dpd"),
+        }
+        credit_limit = loan.get(f"{prefix}{s}_max_credit_limit")
+        if credit_limit is not None:
+            acc["max_credit_limit"] = r2(credit_limit)
+        return acc
+
+    def _product(prefix, has_credit_limit=True):
+        cnt = loan.get(f"{prefix}_cnt_accounts") or 0
+        block = {
+            "flag":         loan.get(f"{prefix}_flag"),
+            "cnt_accounts": cnt,
+            "sms_recency":  loan.get(f"{prefix}_sms_recency"),
+            "sms_vintage":  loan.get(f"{prefix}_sms_vintage"),
+            "accounts":     [_acc(prefix, i) for i in range(1, cnt + 1)],
+        }
+        if has_credit_limit:
+            block["limit_decrease"]           = loan.get(f"{prefix}_limit_decrease")
+            block["limit_decreased_recency"]  = loan.get(f"{prefix}_limit_decreased_recency")
+            block["limit_increase"]           = loan.get(f"{prefix}_limit_increase")
+            block["limit_increased_recency"]  = loan.get(f"{prefix}_limit_increased_recency")
+        return block
+
+    return {
+        "delinquency": {
+            "cnt_delinquent_c30":    loan.get("cnt_delinquncy_loan_c30"),
+            "cnt_delinquent_c60":    loan.get("cnt_delinquncy_loan_c60"),
+            "cnt_overdue_senders_c60": loan.get("cnt_overdue_senders_c60"),
+        },
+        "approvals": {
+            "cnt_approved_c30": loan.get("cnt_loan_approved_c30"),
+            "cnt_rejected_c30": loan.get("cnt_loan_rejected_c30"),
+        },
+        "primary_loan_emi": r2(loan.get("emi_loan_acc1")),
+        "gcredit": _product("gcredit", has_credit_limit=True),
+        "ggives":  _product("ggives",  has_credit_limit=True),
+        "gloan":   _product("gloan",   has_credit_limit=False),
+    }
+
+
 # MASTER FORMATTER
-def format_response(meta, promo, banking, invest, insur, shop, unified):
+def format_response(meta, promo, banking, invest, insur, shop, unified, loan):
     return sanitize({
         "meta":                 meta,
         "promotional_insights": fmt_promotional(promo) if promo else None,
@@ -314,6 +374,7 @@ def format_response(meta, promo, banking, invest, insur, shop, unified):
         "insurance_insights":   fmt_insurance(insur),
         "shopping_insights":    fmt_shopping(shop),
         "unified_persona":      fmt_unified(unified),
+        "loan_insights":        fmt_loan(loan),
     })
 
 
@@ -348,6 +409,9 @@ def analyze(request: SMSRequest):
                 df_shopping, shopping_insights, insurance_insights, investment_insights
             )
 
+        # Loan insights: generated with realistic random values (no SMS data yet)
+        loan_insights = generate_loan_insights()
+
         meta = build_meta(
             df_raw, df_promo, df_rest,
             investment_insights, insurance_insights, shopping_insights, unified_insights
@@ -355,7 +419,8 @@ def analyze(request: SMSRequest):
 
         return format_response(
             meta, promo_report, banking_insights,
-            investment_insights, insurance_insights, shopping_insights, unified_insights
+            investment_insights, insurance_insights, shopping_insights, unified_insights,
+            loan_insights
         )
 
     except Exception as e:
