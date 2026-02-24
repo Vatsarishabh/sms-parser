@@ -166,10 +166,12 @@ def make_bar_chart(x, y, title, xlabel="", ylabel="", color="#3B82F6", orientati
             textposition="outside",
             textfont=dict(color=TEXT_PRI, size=13, weight="bold"),
         ))
+        safe_y = [v for v in y if isinstance(v, (int, float))]
+        y_max = max(safe_y) if safe_y else 0
         fig.update_layout(
             title=dict(text=title, font=dict(color=TEXT_PRI, size=18, weight="bold"), x=0.5),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            xaxis=dict(title=xlabel, tickfont=dict(color=TEXT_SEC, size=12), gridcolor=BORDER, range=[0, max(y)*1.15 if len(y) > 0 and max(y) > 0 else 1]),
+            xaxis=dict(title=xlabel, tickfont=dict(color=TEXT_SEC, size=12), gridcolor=BORDER, range=[0, y_max*1.15 if y_max > 0 else 1]),
             yaxis=dict(title=ylabel, tickfont=dict(color=TEXT_SEC, size=12), gridcolor=BORDER),
             margin=dict(t=50, b=40, l=40, r=10), height=350,
         )
@@ -180,11 +182,13 @@ def make_bar_chart(x, y, title, xlabel="", ylabel="", color="#3B82F6", orientati
             textposition="outside",
             textfont=dict(color=TEXT_PRI, size=13, weight="bold"),
         ))
+        safe_y = [v for v in y if isinstance(v, (int, float))]
+        y_max = max(safe_y) if safe_y else 0
         fig.update_layout(
             title=dict(text=title, font=dict(color=TEXT_PRI, size=18, weight="bold"), x=0.5),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             xaxis=dict(title=xlabel, tickfont=dict(color=TEXT_SEC, size=12), gridcolor=BORDER),
-            yaxis=dict(title=ylabel, tickfont=dict(color=TEXT_SEC, size=12), gridcolor=BORDER, range=[0, max(y)*1.15 if len(y) > 0 and max(y) > 0 else 1]),
+            yaxis=dict(title=ylabel, tickfont=dict(color=TEXT_SEC, size=12), gridcolor=BORDER, range=[0, y_max*1.15 if y_max > 0 else 1]),
             margin=dict(t=50, b=40, l=40, r=10), height=350,
         )
     return fig
@@ -235,7 +239,7 @@ def render_dashboard(data: dict):
                     vals.append(v)
             if vals:
                 fig_sc = make_bar_chart(labels, vals, "SMS Recognition Categories", color="#3B82F6", orientation="h")
-                st.plotly_chart(fig_sc, use_container_width=True)
+                st.plotly_chart(fig_sc, width='content')
 
         with col_persona:
             # Persona View
@@ -270,7 +274,7 @@ def render_dashboard(data: dict):
             earn_val = overall_cf.get("earn", {}).get("total", 0)
             if spend_val or earn_val:
                 fig = make_donut(["Total Spend", "Total Earned"], [spend_val, earn_val], "Overall Spend vs Earn", colors=["#EF4444", "#10B981"])
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='content')
             
         with ch_col2:
             channels = (banking.get("channel_breakdown") or {}).get("overall") or {}
@@ -284,7 +288,7 @@ def render_dashboard(data: dict):
                     title="Channel Spend Breakdown",
                     ylabel="Amount (₹)"
                 )
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, width='content')
 
         st.markdown("<div class='section-header'>💳 Accounts & Cards</div>", unsafe_allow_html=True)
         accounts = banking.get("accounts") or {}
@@ -338,7 +342,7 @@ def render_dashboard(data: dict):
                     bank_upi = tk.get("bank_upi", 0)
                     cc = tk.get("credit_card", 0)
                     fig_tk = make_bar_chart(["Bank/UPI", "Credit Card"], [bank_upi, cc], "Avg Ticket Size", ylabel="₹")
-                    st.plotly_chart(fig_tk, use_container_width=True)
+                    st.plotly_chart(fig_tk, width='content')
 
             with sc2:
                 mb = shop.get("monthly_burn_l3m") or {}
@@ -346,7 +350,7 @@ def render_dashboard(data: dict):
                     months = list(mb.keys())
                     burns = list(mb.values())
                     fig_mb = make_bar_chart(months, burns, "Monthly Burn (L3M)", ylabel="₹", color="#8B5CF6")
-                    st.plotly_chart(fig_mb, use_container_width=True)
+                    st.plotly_chart(fig_mb, width='content')
 
     # ──────────────────────────────────────────────────────────────────
     # WEALTH & INSURANCE TAB
@@ -368,7 +372,7 @@ def render_dashboard(data: dict):
                     labels = [k.replace("_pct", "").replace("_", " ").title() for k in wallet.keys()]
                     vals = list(wallet.values())
                     fig_w = make_donut(labels, vals, "Wallet Share")
-                    st.plotly_chart(fig_w, use_container_width=True)
+                    st.plotly_chart(fig_w, width='content')
 
 
         with i2:
@@ -423,7 +427,7 @@ def render_dashboard(data: dict):
                         [brk.get("credit_card",0), brk.get("offer_or_discount",0), brk.get("lending_app",0), brk.get("other",0)],
                         "Promo Breakdown"
                     )
-                    st.plotly_chart(fig_p, use_container_width=True)
+                    st.plotly_chart(fig_p, width='content')
                     
             with p_col2:
                 lim = promo.get("avg_limit_offers") or {}
@@ -468,19 +472,19 @@ def main():
     if uploaded_file is None:
         return
 
-    if st.button("Analyze Data", type="primary", use_container_width=True):
+    if st.button("Analyze Data", type="primary", width='content'):
         with st.spinner("Processing records securely..."):
             try:
                 # Read CSV
                 df_raw = pd.read_csv(uploaded_file, low_memory=False)
                 df_raw = df_raw.replace({np.nan: None})
                 sms_data = df_raw.to_dict(orient="records")
-                
+                # print(df_raw.shape)
                 result = None
                 
                 # 1. Background Engine processing 
                 try:
-                    response = requests.post("http://0.0.0.0:5004/analyze", json={"sms_data": sms_data}, timeout=30)
+                    response = requests.post("http://localhost:5004/analyze", json={"sms_data": sms_data}, timeout=30)
                     if response.status_code == 200:
                         result = response.json()
                         st.toast("Data successfully processed!", icon="✅")
@@ -500,6 +504,7 @@ def main():
                     st.error("Engine failed to return results from the current dataset.")
             except Exception as e:
                 st.error("Processing issue detected. Please check file formatting.")
+                st.exception(e) 
 
 if __name__ == "__main__":
     main()

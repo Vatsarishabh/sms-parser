@@ -187,27 +187,43 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             pd.to_numeric(grp["Avl Limit"], errors="coerce").dropna()
             if "Avl Limit" in grp.columns else pd.Series(dtype=float)
         )
+        bill_numeric = (
+            pd.to_numeric(grp["Last Bill"], errors="coerce").dropna()
+            if "Last Bill" in grp.columns else pd.Series(dtype=float)
+        )
+        
+        # Calculate max historical limit by chronologically filling missing values
+        if "Avl Limit" in grp.columns or "Last Bill" in grp.columns:
+            temp = grp[["date_dt"]].copy()
+            temp["Avl Limit"] = pd.to_numeric(grp.get("Avl Limit"), errors="coerce")
+            temp["Last Bill"] = pd.to_numeric(grp.get("Last Bill"), errors="coerce")
+            temp = temp.sort_values("date_dt")
+            temp["Avl Limit"] = temp["Avl Limit"].ffill().bfill().fillna(0)
+            temp["Last Bill"] = temp["Last Bill"].ffill().bfill().fillna(0)
+            temp["Limit"] = temp["Avl Limit"] + temp["Last Bill"]
+            
+            if temp["Limit"].max() > 0:
+                max_sum = float(temp["Limit"].max())
+                max_avl_val = math.ceil(max_sum / 1000) * 1000
+                max_avl_idx = temp["Limit"].idxmax()
+                max_avl_date = _iso(temp.at[max_avl_idx, "date_dt"])
+            else:
+                max_avl_val = None
+                max_avl_date = None
+        else:
+            max_avl_val = None
+            max_avl_date = None
+
         if not avl_numeric.empty:
-            # credit_limit: max across all history
-            max_avl_val  = float(avl_numeric.max())
-            max_avl_val = math.ceil(max_avl_val / 1000) * 1000
-            max_avl_idx  = avl_numeric.idxmax()
-            max_avl_date = _iso(grp.at[max_avl_idx, "date_dt"])
             # balance: most-recent reported avl limit (iloc[0] = newest-first)
             latest_avl_val  = float(avl_numeric.iloc[0])
             latest_avl_idx  = avl_numeric.index[0]
             latest_avl_date = _iso(grp.at[latest_avl_idx, "date_dt"])
         else:
-            max_avl_val     = None
-            max_avl_date    = None
             latest_avl_val  = None
             latest_avl_date = None
 
         # last_bill = most-recent non-null Last Bill
-        bill_numeric = (
-            pd.to_numeric(grp["Last Bill"], errors="coerce").dropna()
-            if "Last Bill" in grp.columns else pd.Series(dtype=float)
-        )
         if not bill_numeric.empty:
             last_bill_val  = float(bill_numeric.iloc[0])
             last_bill_idx  = bill_numeric.index[0]
