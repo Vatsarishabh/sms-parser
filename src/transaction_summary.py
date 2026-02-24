@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pandas as pd
 
@@ -72,7 +73,7 @@ def compute_num_credit_cards_from_accounts(df: pd.DataFrame, num_bank_accounts: 
     return int(max(total_unique_account_numbers - int(num_bank_accounts), 0))
 
 
-def cc_like_mask(df: pd.DataFrame) -> pd.Series:
+def cc_like_mask(df: pd.DataFrame) -> bool:
     """
     Rows that look like they belong to credit card activity.
     """
@@ -189,6 +190,7 @@ def build_account_details(df: pd.DataFrame) -> tuple:
         if not avl_numeric.empty:
             # credit_limit: max across all history
             max_avl_val  = float(avl_numeric.max())
+            max_avl_val = math.ceil(max_avl_val / 1000) * 1000
             max_avl_idx  = avl_numeric.idxmax()
             max_avl_date = _iso(grp.at[max_avl_idx, "date_dt"])
             # balance: most-recent reported avl limit (iloc[0] = newest-first)

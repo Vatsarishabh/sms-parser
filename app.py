@@ -309,7 +309,7 @@ def render_dashboard(data: dict):
                 
                 st.success(
                     f"💳 **Credit Card ending in {c.get('credit_card_number')}**\n\n"
-                    f"**Outstanding Balance:** {fmt_currency(bal)}\n\n"
+                    f"**Available Balance:** {fmt_currency(bal)}\n\n"
                     f"**Credit Limit:** {fmt_currency(limit)}\n\n"
                     f"**Last Bill Amount:** {fmt_currency(bill)}{util_str}"
                 )
@@ -480,7 +480,7 @@ def main():
                 
                 # 1. Background Engine processing 
                 try:
-                    response = requests.post("http://127.0.0.1:5004/analyze", json={"sms_data": sms_data}, timeout=30)
+                    response = requests.post("http://0.0.0.0:5004/analyze", json={"sms_data": sms_data}, timeout=30)
                     if response.status_code == 200:
                         result = response.json()
                         st.toast("Data successfully processed!", icon="✅")

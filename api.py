@@ -407,8 +407,8 @@ def format_response(meta, promo, banking, invest, insur, shop, unified, loan):
         "investment_insights":  fmt_investment(invest),
         "insurance_insights":   fmt_insurance(insur),
         "shopping_insights":    fmt_shopping(shop),
+        "loan_insights": fmt_loan(loan),
         "unified_persona":      fmt_unified(unified),
-        "loan_insights":        fmt_loan(loan),
     })
 
 
