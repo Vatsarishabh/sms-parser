@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import pandas as pd
 
@@ -72,7 +73,7 @@ def compute_num_credit_cards_from_accounts(df: pd.DataFrame, num_bank_accounts: 
     return int(max(total_unique_account_numbers - int(num_bank_accounts), 0))
 
 
-def cc_like_mask(df: pd.DataFrame) -> pd.Series:
+def cc_like_mask(df: pd.DataFrame) -> bool:
     """
     Rows that look like they belong to credit card activity.
     """
@@ -81,6 +82,183 @@ def cc_like_mask(df: pd.DataFrame) -> pd.Series:
         (df.get("Context") == "Credit Card Transaction") |
         (df.get("Transaction Channel") == "Card")
     )
+
+
+# =========================
+# 3b) ACCOUNT / CARD DETAILS
+# =========================
+def build_account_details(df: pd.DataFrame) -> tuple:
+    """
+    Returns (bank_account_details, credit_card_details).
+
+    Bank account schema:
+      {
+        "account_number": str,
+        "balance": {"currency": "INR", "value": float|None, "updated_at": str|None}
+      }
+
+    Credit card schema:
+      {
+        "credit_card_number": str,
+        "balance":        {"currency": "INR", "value": float|None, "updated_at": str|None},
+        "last_bill":      {"currency": "INR", "value": float|None, "updated_at": str|None},
+        "credit_limit":   {"currency": "INR", "value": float|None, "updated_at": str|None},
+        "utilisation_pct": float|None
+      }
+
+    Strategy:
+      balance.value      = MAX 'Avl Limit' seen for that card
+      last_bill.value    = 'Last Bill' from most-recent statement SMS
+      credit_limit.value = same MAX Avl Limit (best SMS proxy)
+      utilisation_pct    = last_bill / credit_limit
+    """
+    bank_details: list = []
+    card_details: list = []
+
+    if df.empty:
+        return bank_details, card_details
+
+    # helpers
+    def _to_float(v):
+        try:
+            f = float(str(v).replace(",", ""))
+            return f if pd.notna(f) else None
+        except Exception:
+            return None
+
+    def _iso(ts):
+        try:
+            return pd.Timestamp(ts).isoformat() if pd.notna(ts) else None
+        except Exception:
+            return None
+
+    # ensure date_dt exists
+    if "date_dt" not in df.columns:
+        df = df.copy()
+        df["date_dt"] = pd.to_datetime(df.get("date"), unit="ms", errors="coerce")
+
+    if "Account Number" not in df.columns:
+        return bank_details, card_details
+
+    cleaned = df.copy()
+    cleaned["_acct"] = (
+        cleaned["Account Number"]
+        .astype(str).str.strip()
+        .replace(["None", "", "nan", "NaN"], np.nan)
+    )
+    cleaned = cleaned.dropna(subset=["_acct"])
+    cleaned = cleaned.sort_values("date_dt", ascending=False, na_position="last")
+    is_cc   = cc_like_mask(cleaned)
+
+    # ── BANK ACCOUNTS: group all rows, pick last-known non-null balance ───────
+    bank_rows = cleaned[~is_cc]
+    for acct_num, grp in bank_rows.groupby("_acct", sort=False):
+        # grp is already sorted newest-first
+        bal_numeric = (
+            pd.to_numeric(grp["Balance"], errors="coerce").dropna()
+            if "Balance" in grp.columns else pd.Series(dtype=float)
+        )
+        if not bal_numeric.empty:
+            # most-recent row that actually reported a balance
+            bal_val  = float(bal_numeric.iloc[0])
+            bal_idx  = bal_numeric.index[0]
+            bal_date = _iso(grp.at[bal_idx, "date_dt"])
+        else:
+            bal_val  = None
+            bal_date = _iso(grp["date_dt"].iloc[0]) if not grp.empty else None
+
+        bank_details.append({
+            "account_number": acct_num,
+            "balance": {
+                "currency":   "INR",
+                "value":      bal_val,
+                "updated_at": bal_date,
+            },
+        })
+
+    # credit cards: aggregate across all rows per card number
+    cc_rows = cleaned[is_cc]
+    for card_num, grp in cc_rows.groupby("_acct", sort=False):
+        # grp is newest-first
+
+        # credit_limit = MAX Avl Limit ever seen (historical peak = best proxy for true limit)
+        # balance      = LATEST non-null Avl Limit (current available balance)
+        avl_numeric = (
+            pd.to_numeric(grp["Avl Limit"], errors="coerce").dropna()
+            if "Avl Limit" in grp.columns else pd.Series(dtype=float)
+        )
+        bill_numeric = (
+            pd.to_numeric(grp["Last Bill"], errors="coerce").dropna()
+            if "Last Bill" in grp.columns else pd.Series(dtype=float)
+        )
+        
+        # Calculate max historical limit by chronologically filling missing values
+        if "Avl Limit" in grp.columns or "Last Bill" in grp.columns:
+            temp = grp[["date_dt"]].copy()
+            temp["Avl Limit"] = pd.to_numeric(grp.get("Avl Limit"), errors="coerce")
+            temp["Last Bill"] = pd.to_numeric(grp.get("Last Bill"), errors="coerce")
+            temp = temp.sort_values("date_dt")
+            temp["Avl Limit"] = temp["Avl Limit"].ffill().bfill().fillna(0)
+            temp["Last Bill"] = temp["Last Bill"].ffill().bfill().fillna(0)
+            temp["Limit"] = temp["Avl Limit"] + temp["Last Bill"]
+            
+            if temp["Limit"].max() > 0:
+                max_sum = float(temp["Limit"].max())
+                max_avl_val = math.ceil(max_sum / 1000) * 1000
+                max_avl_idx = temp["Limit"].idxmax()
+                max_avl_date = _iso(temp.at[max_avl_idx, "date_dt"])
+            else:
+                max_avl_val = None
+                max_avl_date = None
+        else:
+            max_avl_val = None
+            max_avl_date = None
+
+        if not avl_numeric.empty:
+            # balance: most-recent reported avl limit (iloc[0] = newest-first)
+            latest_avl_val  = float(avl_numeric.iloc[0])
+            latest_avl_idx  = avl_numeric.index[0]
+            latest_avl_date = _iso(grp.at[latest_avl_idx, "date_dt"])
+        else:
+            latest_avl_val  = None
+            latest_avl_date = None
+
+        # last_bill = most-recent non-null Last Bill
+        if not bill_numeric.empty:
+            last_bill_val  = float(bill_numeric.iloc[0])
+            last_bill_idx  = bill_numeric.index[0]
+            last_bill_date = _iso(grp.at[last_bill_idx, "date_dt"])
+        else:
+            last_bill_val  = None
+            last_bill_date = None
+
+        # utilisation = last_bill / credit_limit
+        if last_bill_val is not None and max_avl_val and max_avl_val > 0:
+            utilisation_pct = round(last_bill_val / max_avl_val, 4)
+        else:
+            utilisation_pct = None
+
+        card_details.append({
+            "credit_card_number": card_num,
+            "balance": {
+                "currency":   "INR",
+                "value":      latest_avl_val,   # most-recent available balance
+                "updated_at": latest_avl_date,
+            },
+            "last_bill": {
+                "currency":   "INR",
+                "value":      last_bill_val,
+                "updated_at": last_bill_date,
+            },
+            "credit_limit": {
+                "currency":   "INR",
+                "value":      max_avl_val,       # historical max = true limit proxy
+                "updated_at": max_avl_date,
+            },
+            "utilisation_pct": utilisation_pct,
+        })
+
+    return bank_details, card_details
 
 
 # =========================
@@ -283,23 +461,28 @@ def monthly_and_overall_insights(txn_df: pd.DataFrame) -> dict:
       }
     """
     df = prep_txn_df(txn_df)
-    
+
     # 1. Calculate overall insights first (ground truth for cards)
     overall = build_insights(df)
-    
+
     # 2. Slice for last month
     last_month_df = slice_last_month(df)
-    
+
     # 3. Apply HARD RULE: If overall CC count is 0, last month must be 0
     force_cc = None
     if overall.get("num_credit_cards", 0) == 0:
         force_cc = 0
-        
+
     last_month = build_insights(last_month_df, force_num_credit_cards=force_cc)
 
+    # 4. Account / card details (latest balance + updated_at per unique number)
+    bank_account_details, credit_card_details = build_account_details(df)
+
     return {
-        "last_month": last_month,
-        "overall": overall,
-        "last_month_rows": int(len(last_month_df)),
-        "overall_rows": int(len(df)),
+        "last_month":           last_month,
+        "overall":              overall,
+        "last_month_rows":      int(len(last_month_df)),
+        "overall_rows":         int(len(df)),
+        "bank_account_details": bank_account_details,
+        "credit_card_details":  credit_card_details,
     }

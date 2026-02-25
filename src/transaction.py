@@ -31,54 +31,6 @@ def first_group(pattern, text, flags=re.I):
         return None
     return m.group(1) if m.lastindex else m.group(0)
 
-
-# -----------------------------
-# 2) NEW: Offer/Marketing guard
-# -----------------------------
-_OFFER_PATTERNS = [
-    r"\bpre[-\s]?qualified\b",
-    r"\bpre[-\s]?approved\b",
-    r"\bapproved\s+for\b",
-    r"\byou('?re| are)\s+eligible\b",
-    r"\bapply\s+now\b",
-    r"\binstant\s+approval\b",
-    r"\bclick\s+(now|here)\b",
-    r"\boffer\b",
-    r"\boffer\s+valid\b",
-    r"\bvalid\s+till\b",
-    r"\bzero\s+joining\s+fee\b",
-    r"\bjoining\s+fee\b",
-    r"\bannual\s+fee\b",
-    r"\bannual\s+cashback\b",
-    r"\bcashback\b",
-    r"\bcredit\s+limit\b",
-    r"\blimit\s+of\s+up\s+to\b",
-    r"\bcard\b.*\b(offer|eligible|pre[-\s]?approved|pre[-\s]?qualified|apply)\b",
-]
-
-# If these appear, it becomes *very likely* it's NOT a transaction
-_NON_TXN_STRONG_CTA = [
-    r"\bhttp\b", r"\bwww\b", r"\bclick\b", r"\bapply\b", r"\bavail\b", r"\boffer\s+valid\b"
-]
-
-def is_offer_or_marketing(text: str) -> bool:
-    if not isinstance(text, str) or not text.strip():
-        return False
-    t = text.lower()
-
-    # must NOT be an actual txn indicator
-    txn_verbs = re.search(r"\b(credited|debited|spent|paid|purchase|withdrawn|received|transferred)\b", t)
-    if txn_verbs:
-        # still allow offers that contain "credited" as cashback marketing etc
-        # but generally if txn verbs exist, don't auto-block unless strong offer cues exist
-        strong_offer = any(re.search(p, t) for p in _OFFER_PATTERNS)
-        strong_cta = any(re.search(p, t) for p in _NON_TXN_STRONG_CTA)
-        return bool(strong_offer and strong_cta)
-
-    # no txn verbs -> if offer markers appear, block parsing
-    return any(re.search(p, t) for p in _OFFER_PATTERNS)
-
-
 # -----------------------------
 # 3) Reference extraction (keep yours)
 # -----------------------------
@@ -93,29 +45,39 @@ def extract_reference(text):
 
 
 # -----------------------------
-# 4) NEW: Amount extraction that avoids "limit/cashback/fees"
+# 4) Amount extraction
 # -----------------------------
 def extract_txn_amount(text: str):
     """
-    Extract amount only when it's tied to a real transaction verb.
-    Avoid credit limit, cashback, fee marketing amounts.
+    Extract amount tied to a real transaction verb
+    (credited/debited/paid/spent/received/withdrawn/transferred).
     """
     if not isinstance(text, str) or not text.strip():
         return None
 
     t = text
 
-    # if marketing/offer, do not treat any amount as txn amount
-    if is_offer_or_marketing(t):
-        return None
-
     # Amount needs a txn verb nearby (credited/debited/paid/spent/received/withdrawn/transferred)
-    # Examples:
-    # "Rs 1,234 credited", "debited by INR 500", "paid Rs. 99", "spent INR 250"
+    # Handles:
+    #   "Rs 1,234 credited"            → pattern 1
+    #   "debited by INR 500"           → pattern 2
+    #   "INR 550 has been DEBITED"     → pattern 3  (Canara, SBI style)
+    #   "amount of INR 550 debited"    → pattern 4
+    #   "Amt Rs. 99 paid"              → pattern 5
+    _TXN_VERB = r"(?:credited|debited|paid|spent|received|withdrawn|transferred)"
+    _CCY      = r"(?:rs|inr)\.?"
+    _AMT      = r"([\d,]+(?:\.\d{1,2})?)"
+    _FILLER   = r"(?:\s+(?:has\s+been|have\s+been|is|are|was|been|successfully))*"
+
     amount_patterns = [
-        r"(?:rs|inr)\.?\s*([\d,]+(?:\.\d{1,2})?)\s*(?:is\s+)?(?:credited|debited|paid|spent|received|withdrawn|transferred)\b",
-        r"(?:credited|debited|paid|spent|received|withdrawn|transferred)\s*(?:by\s*)?(?:rs|inr)\.?\s*([\d,]+(?:\.\d{1,2})?)\b",
-        r"\bamt\b[\s:.-]*(?:rs|inr)?\.?\s*([\d,]+(?:\.\d{1,2})?)\b.*?\b(credited|debited|paid|spent|received|withdrawn|transferred)\b",
+        # INR 550 credited  /  INR 550 has been DEBITED
+        rf"{_CCY}\s*{_AMT}\s*{_FILLER}\s*{_TXN_VERB}\b",
+        # debited by INR 500  /  credited INR 500
+        rf"{_TXN_VERB}\s*(?:by\s*)?{_CCY}\s*{_AMT}\b",
+        # amount of INR 550 debited/credited
+        rf"amount\s+of\s+{_CCY}\s*{_AMT}\s*{_FILLER}\s*{_TXN_VERB}\b",
+        # Amt/Amount Rs. 99 paid
+        rf"\bamt\b[\s:.-]*{_CCY}?\s*{_AMT}\b.*?\b{_TXN_VERB}\b",
     ]
 
     for p in amount_patterns:
@@ -130,15 +92,67 @@ def extract_balance(text: str):
     if not isinstance(text, str) or not text.strip():
         return None
 
-    # Balance/limit can appear for card offers; but balance extraction is still ok only if txn-like
-    # If offer, ignore balance too.
-    if is_offer_or_marketing(text):
-        return None
-
-    p_balance = r"(?:balance|bal|avl|avail\.bal|avail\s+bal|avl\s+bal)[\s\.:]*(?:rs|inr)?\.?\s*([\d,]+(?:\.\d{1,2})?)"
+    # Handles:
+    #   "Bal: INR 83,123.50"  /  "Avail.bal INR 83,123.50"  /  "Balance Rs 5000"
+    #   The currency symbol may come BEFORE or AFTER the balance keyword
+    p_balance = (
+        r"(?:balance|bal|avl|avail\.bal|avail\s+bal|avl\s+bal)"
+        r"[\s\.:]* "
+        r"(?:(?:rs|inr)\.?\s*)?"
+        r"([\d,]+(?:\.\d{1,2})?)"
+    )
     b = first_group(p_balance, text)
     return b.replace(",", "") if b else None
 
+
+def extract_avl_limit(text: str):
+    """
+    Extract the Available Credit Limit from a credit-card spend SMS.
+    Handles patterns like:
+      "Avl Limit: INR 69,404.64"
+      "Available Limit: Rs 50000"
+      "Avl Lmt INR 1,23,456.78"
+    Returns numeric string without commas, or None.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    p = (
+        r"(?:avl|avail(?:able)?)\s*li?mi?t[:\s]*"
+        r"(?:(?:inr|rs)\.?\s*)?"
+        r"([\d,]+(?:\.\d{1,2})?)"
+    )
+    m = re.search(p, text, re.I)
+    if m:
+        return m.group(1).replace(",", "")
+    return None
+
+
+def extract_last_bill(text: str):
+    """
+    Extract the total bill/statement due amount from a credit-card statement SMS.
+    Handles patterns like:
+      "Total of Rs 9,977.40 or minimum of Rs 500.00 is due by 23-MAY-25"
+      "Your bill of INR 5,430 is due"
+      "Total Amount Due: INR 12,345.67"
+    Returns numeric string without commas, or None.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    patterns = [
+        # "Total of Rs 9,977.40 ... is due"
+        r"total\s+of\s+(?:rs|inr)\.?\s*([\d,]+(?:\.\d{1,2})?)",
+        # "Total Amount Due: INR 12,345"
+        r"total\s+(?:amount\s+)?due[:\s]+(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
+        # "bill of INR 5,430"
+        r"bill\s+(?:amount\s+)?(?:of\s+)?(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
+        # "Amount Due Rs 4,000"
+        r"amount\s+due[:\s]+(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.I)
+        if m:
+            return m.group(1).replace(",", "")
+    return None
 
 # -----------------------------
 # 5) Your payer/payee + subtype functions can remain
@@ -226,28 +240,11 @@ def get_transaction_subtype(text, txn_type, mandate_flag, channel, product):
 
 
 # -----------------------------
-# 6) UPDATED parse_transaction with early marketing exit
+# 6) parse_transaction
+# (offer/marketing messages are filtered upstream in promotion_analysis)
 # -----------------------------
 def parse_transaction(body, address):
     t = clean_text(body)
-
-    # EARLY EXIT: Offer/Marketing (pre-qualified card, limits, cashback, fees, CTA)
-    if is_offer_or_marketing(t):
-        return {
-            "SenderID": address,
-            "Financial Product": "Credit Card",
-            "Transaction Type": "Non-Transaction",
-            "Transaction Subtype": "Card Offer/Marketing",
-            "Amount": None,
-            "Balance": None,
-            "Payee": None,
-            "Reference Number": None,
-            "Card Number": None,
-            "Account Number": None,
-            "Transaction Channel": "Generic",
-            "Context": "Offer/Marketing",
-            "Mandate Flag": False,
-        }
 
     # account/card snippets (kept from your version)
     p_acc   = r"(?:a/c|ac|acc|no|card|wallet|X+|[\*]+)\s*(\d{3,4})\b"
@@ -317,6 +314,9 @@ def parse_transaction(body, address):
     subtype = get_transaction_subtype(t, txn_type, mandate_flag, channel, product)
     payer, payee = extract_payer_payee(t)
 
+    avl_limit = extract_avl_limit(t)
+    last_bill  = extract_last_bill(t)
+
     return {
         "SenderID": address,
         "Financial Product": product,
@@ -324,6 +324,8 @@ def parse_transaction(body, address):
         "Transaction Subtype": subtype,
         "Amount": amount,
         "Balance": balance,
+        "Avl Limit": avl_limit,
+        "Last Bill": last_bill,
         "Payee": payee,
         "Reference Number": ref,
         "Card Number": card_number,
@@ -346,8 +348,9 @@ def analyze_transactions(df):
     if trans_df.empty:
         cols = [
             "_id","date","SenderID","Financial Product","Transaction Type","Transaction Subtype",
-            "Amount","Balance","Payee","Reference Number","Card Number","Account Number",
-            "Transaction Channel","Context","Mandate Flag","body","bank_name"
+            "Amount","Balance","Avl Limit","Last Bill","Payee","Reference Number",
+            "Card Number","Account Number","Transaction Channel","Context","Mandate Flag",
+            "body","bank_name"
         ]
         return pd.DataFrame(columns=cols)
 
@@ -363,8 +366,9 @@ def analyze_transactions(df):
 
     cols = [
         "_id","date","SenderID","Financial Product","Transaction Type","Transaction Subtype",
-        "Amount","Balance","Payee","Reference Number","Card Number","Account Number",
-        "Transaction Channel","Context","Mandate Flag","body","bank_name"
+        "Amount","Balance","Avl Limit","Last Bill","Payee","Reference Number",
+        "Card Number","Account Number","Transaction Channel","Context","Mandate Flag",
+        "body","bank_name"
     ]
     parsed = parsed[[c for c in cols if c in parsed.columns]]
 
