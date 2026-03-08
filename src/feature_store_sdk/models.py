@@ -10,6 +10,38 @@ Flow:  raw SMS → tagger (classify) → category parser → data model → deri
 
 from dataclasses import dataclass, field, asdict
 from typing import Optional
+import re
+
+
+def _to_snake(value: str) -> str:
+    """Convert a space/hyphen-delimited string to snake_case."""
+    s = value.strip()
+    s = re.sub(r'[/\-\s]+', '_', s)
+    # insert underscore before uppercase runs followed by lowercase
+    s = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s)
+    return s.lower()
+
+
+# Fields whose string values should be snake_case-standardized
+_STANDARDIZE_FIELDS = frozenset({
+    "traffic_type", "sms_category", "txn_type", "txn_subtype",
+    "financial_product", "txn_channel", "context",
+    "event_type", "insurance_type", "asset_type",
+    "bill_type", "promo_type", "offered_product",
+    "alert_type", "action_taken", "otp_for",
+})
+
+
+def _clean_dict(d: dict) -> dict:
+    """Strip None-valued keys and snake_case-standardize enum-like string fields."""
+    cleaned = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if k in _STANDARDIZE_FIELDS and isinstance(v, str) and v:
+            v = _to_snake(v)
+        cleaned[k] = v
+    return cleaned
 
 
 # ===========================================================================
@@ -20,7 +52,7 @@ class SMSBase:
     """Common fields extracted from every SMS regardless of category."""
     raw_body: str = ""
     sender_address: str = ""
-    bank_name: str = "Unknown"
+    entity_name: str = "unknown"
     header_code: Optional[str] = None
     traffic_type: str = "GENERAL"
     sms_category: str = "Other"
@@ -30,7 +62,7 @@ class SMSBase:
     timestamp: Optional[str] = None
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        return _clean_dict(asdict(self))
 
 
 # ===========================================================================
@@ -266,16 +298,16 @@ class OTPParsed(SMSBase):
 # CATEGORY → MODEL MAPPING
 # ===========================================================================
 CATEGORY_MODEL_MAP = {
-    "Transactions": TransactionParsed,
-    "Lending": LendingParsed,
-    "Insurance": InsuranceParsed,
-    "Investments": InvestmentParsed,
-    "EPFO": EPFOParsed,
-    "Utility Bills": UtilityBillParsed,
-    "Promotions": PromotionParsed,
-    "Orders": OrderParsed,
-    "Security Alert": SecurityAlertParsed,
-    "OTP": OTPParsed,
+    "transactions": TransactionParsed,
+    "lending": LendingParsed,
+    "insurance": InsuranceParsed,
+    "investments": InvestmentParsed,
+    "epfo": EPFOParsed,
+    "utility_bills": UtilityBillParsed,
+    "promotions": PromotionParsed,
+    "orders": OrderParsed,
+    "security_alert": SecurityAlertParsed,
+    "otp": OTPParsed,
 }
 
 
@@ -287,4 +319,4 @@ def get_model_for_category(category: str):
 def get_empty_model(category: str) -> dict:
     """Returns a dict with all fields for a category initialized to defaults."""
     model_cls = get_model_for_category(category)
-    return asdict(model_cls())
+    return _clean_dict(asdict(model_cls()))

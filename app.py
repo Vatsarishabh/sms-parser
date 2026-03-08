@@ -140,6 +140,12 @@ def fmt_currency(val):
         return "N/A"
     return f"₹ {float(val):,.2f}"
 
+def fmt_label(val):
+    """Convert snake_case values to Title Case for display."""
+    if val is None or not isinstance(val, str):
+        return "N/A"
+    return val.replace("_", " ").title()
+
 def make_donut(labels, values, title, colors=None):
     if not colors:
         colors = ["#3B82F6", "#60A5FA", "#93C5FD", "#BFDBFE", "#DBEAFE"]
@@ -328,7 +334,7 @@ def render_dashboard(data: dict):
             merch = shop.get("merchants") or {}
             beh = shop.get("behavior") or {}
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Dominant Merchant", merch.get("dominant", "N/A"))
+            c1.metric("Dominant Merchant", fmt_label(merch.get("dominant")))
             c2.metric("Merchant Switches", merch.get("merchants_switch_count", 0))
             c3.metric("Impulse Purchase Index", f"{beh.get('impulse_purchase_index_pct', 0)}%")
             c4.metric("Refund Rate", f"{beh.get('refund_rate_pct', 0)}%")
@@ -364,9 +370,9 @@ def render_dashboard(data: dict):
                 act = invest.get("activity") or {}
                 rel = invest.get("reliability") or {}
                 st.metric("Total Invested", fmt_currency(pf.get("total_invested")))
-                st.metric("Dominant Asset", pf.get("dominant_asset", "N/A"))
+                st.metric("Dominant Asset", fmt_label(pf.get("dominant_asset")))
                 st.metric("Stability Score", act.get("stability_score", "N/A"))
-                
+
                 wallet = pf.get("wallet_share") or {}
                 if wallet:
                     labels = [k.replace("_pct", "").replace("_", " ").title() for k in wallet.keys()]
@@ -374,6 +380,43 @@ def render_dashboard(data: dict):
                     fig_w = make_donut(labels, vals, "Wallet Share")
                     st.plotly_chart(fig_w, width='content')
 
+                # Platform breakdown
+                plats = invest.get("platforms") or {}
+                breakdown = plats.get("breakdown") or {}
+                if breakdown:
+                    st.markdown("<div class='sub-header'>Investment Platforms</div>", unsafe_allow_html=True)
+                    pc1, pc2 = st.columns(2)
+                    pc1.metric("Platforms Used", plats.get("count", 0))
+                    pc2.metric("Diversification", fmt_label(plats.get("diversification")))
+                    plat_names = [k.replace("_", " ").title() for k in breakdown.keys()]
+                    plat_totals = [v.get("total_invested", 0) for v in breakdown.values()]
+                    if any(t > 0 for t in plat_totals):
+                        fig_plat = make_bar_chart(plat_names, plat_totals, "Investment by Platform", ylabel="Amount (₹)")
+                        st.plotly_chart(fig_plat, width='content')
+
+                # SIP behavior
+                sip_beh = invest.get("sip_behavior") or {}
+                if sip_beh.get("active_sips_detected", 0) > 0:
+                    st.markdown("<div class='sub-header'>SIP Behavior</div>", unsafe_allow_html=True)
+                    st.metric("Active SIPs Detected", sip_beh.get("active_sips_detected", 0))
+                    if sip_beh.get("micro_dca_detected"):
+                        detail = sip_beh.get("micro_dca_detail") or {}
+                        st.info(
+                            f"Micro-DCA detected: **{fmt_currency(detail.get('amount'))}** "
+                            f"x {detail.get('occurrences', 0)} on **{fmt_label(detail.get('platform'))}**"
+                        )
+                    for sp in sip_beh.get("sip_platforms", []):
+                        freq = sp.get("avg_frequency_days")
+                        freq_str = f"every {freq:.0f} days" if freq else ""
+                        st.write(f"**{fmt_label(sp.get('platform'))}** — {sp.get('txn_count', 0)} transactions {freq_str}")
+
+                # Investor profile
+                profile = invest.get("investor_profile") or {}
+                if profile:
+                    st.markdown("<div class='sub-header'>Investor Profile</div>", unsafe_allow_html=True)
+                    st.metric("Investment Style", fmt_label(profile.get("style")))
+                    if profile.get("uses_direct_plans"):
+                        st.success("Uses Direct Plans (cost-conscious investor)")
 
         with i2:
             st.markdown("<div class='section-header'>🛡️ Insurance</div>", unsafe_allow_html=True)

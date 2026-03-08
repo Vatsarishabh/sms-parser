@@ -33,9 +33,17 @@ KEYWORD_TAG_MAP = {
     "sbi": "BANK", "kotak": "BANK", "bank": "BANK",
     "mmtc": "GOLD_ORG", "pamp": "GOLD_ORG",
     "zerodha": "INVEST_APP", "groww": "INVEST_APP", "securities": "INVEST_APP",
-    "mutual fund": "INVEST_MF", "sip": "INVEST_SIP", "nav": "INVEST_NAV",
-    "demat": "INVEST_DEMAT", "dividend": "INVEST_DIV", "nfo": "INVEST_NFO",
-    "stock": "INVEST_STOCK", "equity": "INVEST_STOCK", "portfolio": "INVEST_PORT",
+    "kuvera": "INVEST_APP", "indmoney": "INVEST_APP", "et money": "INVEST_APP",
+    "paytm money": "INVEST_APP", "coin": "INVEST_APP",
+    "iccl": "INVEST_APP", "indianclearingcorporation": "INVEST_APP",
+    "mutual fund": "INVEST_MF", "sip": "INVEST_SIP",
+    "nav:": "INVEST_NAV", "nav value": "INVEST_NAV",
+    "demat": "INVEST_DEMAT", "dividend": "INVEST_DIV",
+    "new fund offer": "INVEST_NFO",
+    "stock market": "INVEST_STOCK", "equity": "INVEST_STOCK",
+    "stocks": "INVEST_STOCK", "shares": "INVEST_STOCK",
+    "portfolio": "INVEST_PORT",
+    "folio": "INVEST_FOLIO", "units allotted": "INVEST_ALLOT",
     "cred": "FINTECH_APP", "paytm": "FINTECH_APP",
 
     # --- SHOPPING & SERVICES ---
@@ -46,10 +54,10 @@ KEYWORD_TAG_MAP = {
 
     # --- INSURANCE ---
     "insurance": "INSURE", "niva": "INSURE", "bupa": "INSURE",
-    "prudential": "INSURE", "lic": "INSURE",
+    "prudential": "INSURE",
     "policy": "INSURE_DOC", "premium": "INSURE_PAY",
     "sum assured": "INSURE_SUM", "renewal": "INSURE_RENEW",
-    "claim": "INSURE_ACTION",
+    "insurance claim": "INSURE_ACTION", "claim status": "INSURE_ACTION",
 
     # --- LENDING ---
     "repayment": "LOAN_REPAY", "overdue": "LOAN_OVERDUE",
@@ -71,13 +79,15 @@ KEYWORD_TAG_MAP = {
     "report": "SEC_ALERT", "reported": "SEC_ALERT",
     "cyber": "SEC_ALERT", "fraud": "SEC_ALERT",
     "suspicious": "SEC_ALERT", "blocked": "SEC_ALERT",
+    "wrong": "SEC_ALERT", "locked": "SEC_ALERT",
     "pin": "SEC_CODE", "code:": "SEC_CODE", "otp": "OTP",
 
     # --- STATUS & LOGISTICS ---
     "successfully": "STATUS_OK", "processed": "STATUS_OK",
     "initiated": "STATUS_START",
     "failed": "STATUS_FAIL", "declined": "STATUS_FAIL",
-    "order": "ORDER", "delivery": "ORDER_DLV", "delivered": "ORDER_DLV",
+    "order": "ORDER", "booked": "ORDER",
+    "delivery": "ORDER_DLV", "delivered": "ORDER_DLV",
     "shipped": "ORDER_DLV", "dispatched": "ORDER_DLV", "ekart": "ORDER_DLV",
     "due": "BILL_DUE", "statement": "BILL_DOC",
     "mandate": "MANDATE",
@@ -87,6 +97,7 @@ KEYWORD_TAG_MAP = {
     "coupon": "PROMO", "deal": "PROMO", "flat": "PROMO",
     "% off": "PROMO", "limited time": "PROMO",
     "shop now": "PROMO", "buy now": "PROMO", "grab": "PROMO",
+    "earned": "PROMO", "points": "PROMO",
 }
 
 # 2. Tag-to-Category classification rules (priority ordered)
@@ -112,6 +123,7 @@ CATEGORY_RULES = {
                       "INSURE_RENEW", "INSURE_ACTION"},
         "boost": {"CUR", "AMT_LBL"},
         "priority": 7,
+        "exclude": {"PROMO"},
     },
     "Lending": {
         "required": {"LOAN", "LOAN_EMI", "LOAN_APP", "LOAN_REPAY", "LOAN_OVERDUE",
@@ -120,9 +132,11 @@ CATEGORY_RULES = {
         "priority": 6,
     },
     "Investments": {
-        "required": {"INVEST_APP", "INVEST_MF", "INVEST_SIP", "INVEST_NAV",
-                      "INVEST_DEMAT", "INVEST_DIV", "INVEST_NFO", "INVEST_STOCK",
-                      "INVEST_PORT", "GOLD_ORG"},
+        "required": {"INVEST_APP", "INVEST_MF", "INVEST_SIP",
+                      "INVEST_DEMAT", "INVEST_DIV", "INVEST_NFO",
+                      "INVEST_FOLIO", "INVEST_ALLOT",
+                      "GOLD_ORG"},
+        "weak": {"INVEST_NAV", "INVEST_STOCK", "INVEST_PORT"},
         "boost": {"CUR", "AMT_LBL"},
         "priority": 5,
     },
@@ -144,12 +158,13 @@ CATEGORY_RULES = {
     },
     "Transactions": {
         "required": {"TXN_OUT", "TXN_IN", "TXN_REV", "TXN_GEN", "TXN_CHNL",
-                      "ACC", "UPI"},
-        "boost": {"CUR", "BAL", "BANK", "CARD", "MERCHANT", "STATUS_OK"},
+                      "ACC", "UPI", "CARD", "BILL_DOC"},
+        "boost": {"CUR", "BAL", "BANK", "MERCHANT", "STATUS_OK"},
         "priority": 4,
         "exclude": {"GOLD_ORG", "INVEST_APP", "INVEST_MF", "INVEST_SIP",
                      "INVEST_NAV", "INVEST_DEMAT", "INVEST_DIV", "INVEST_NFO",
-                     "INVEST_STOCK", "INVEST_PORT",
+                     "INVEST_STOCK", "INVEST_PORT", "INVEST_FOLIO",
+                     "INVEST_ALLOT",
                      "INSURE", "INSURE_DOC", "INSURE_PAY", "INSURE_SUM",
                      "INSURE_RENEW", "INSURE_ACTION",
                      "EPFO", "EPFO_CONTRIB", "EPFO_UAN", "EPFO_PF", "EPFO_PENSION"},
@@ -272,17 +287,22 @@ def classify_by_tags(unique_tags):
     for category, rule in CATEGORY_RULES.items():
         required_hits = unique_tags & rule["required"]
         boost_hits = unique_tags & rule["boost"]
+        weak_hits = unique_tags & rule.get("weak", set())
 
+        # Need at least one strong required tag, OR 2+ weak tags
         if not required_hits:
-            continue
+            if len(weak_hits) < 2:
+                continue
+            # 2+ weak tags qualify — treat them as required hits
+            required_hits = weak_hits
 
         # If any exclude tag is present, skip this category
         exclude = rule.get("exclude", set())
         if exclude and (unique_tags & exclude):
             continue
 
-        # Score = (required matches * priority) + boost matches
-        score = len(required_hits) * rule["priority"] + len(boost_hits)
+        # Score = (required matches * priority) + boost matches + weak matches
+        score = len(required_hits) * rule["priority"] + len(boost_hits) + len(weak_hits)
 
         if score > best_score:
             best_score = score
@@ -316,7 +336,7 @@ def identify_sender(address):
     header_code, _ = _parse_sender_address(address)
     if header_code and header_code in _SENDER_MAP:
         return _SENDER_MAP[header_code]
-    return "Unknown"
+    return "unknown"
 
 
 # Backward-compatible alias
@@ -329,7 +349,7 @@ def infer_sender_category(entity_name):
     Returns a category string (e.g. ``"Insurance"``, ``"Investments"``)
     or ``None`` if no hint can be inferred.
     """
-    if not entity_name or entity_name == "Unknown":
+    if not entity_name or entity_name == "unknown":
         return None
     lower = entity_name.lower()
     for keyword, category in _ENTITY_CATEGORY_HINTS:
@@ -353,7 +373,7 @@ def decode_sender_meta(sender_address):
     if traffic_char:
         traffic_type = TRAFFIC_TYPE_MAP.get(traffic_char, "OTHER")
 
-    entity_name = _SENDER_MAP.get(header_code, "Unknown") if header_code else "Unknown"
+    entity_name = _SENDER_MAP.get(header_code, "unknown") if header_code else "unknown"
     sender_category_hint = infer_sender_category(entity_name)
 
     return {
@@ -371,65 +391,3 @@ def tag_message(text):
     """
     tag_result = get_sms_tags(text)
     return classify_by_tags(tag_result["unique_tags"])
-
-
-def process_sms_df(df):
-    """
-    Tags a dataframe with bank names, sender metadata, SMS tags, and category.
-    """
-    df = df.copy()
-
-    msg_col = None
-    addr_col = None
-    for col in df.columns:
-        if col.lower() in ["body", "message", "text"]:
-            msg_col = col
-        if col.lower() in ["address", "sender_id"]:
-            addr_col = col
-
-    if not msg_col:
-        print("Error: Could not find SMS body column.")
-        return df
-
-    print(f"Processing SMS in '{msg_col}' using address in '{addr_col}'...")
-
-    # Sender identification
-    if addr_col:
-        sender_meta = df[addr_col].apply(decode_sender_meta)
-        df["bank_name"] = sender_meta.apply(lambda x: x["entity_name"])
-        df["header_code"] = sender_meta.apply(lambda x: x["header_code"])
-        df["traffic_type"] = sender_meta.apply(lambda x: x["traffic_type"])
-        df["sender_category_hint"] = sender_meta.apply(lambda x: x["sender_category_hint"])
-    else:
-        df["bank_name"] = "Unknown"
-        df["header_code"] = None
-        df["traffic_type"] = "GENERAL"
-        df["sender_category_hint"] = None
-
-    # Tag extraction and classification
-    tag_results = df[msg_col].apply(get_sms_tags)
-    df["occurrence_tag"] = tag_results.apply(lambda x: x["occurrence_tag"])
-    df["alphabetical_tag"] = tag_results.apply(lambda x: x["alphabetical_tag"])
-    df["tag_count"] = tag_results.apply(lambda x: x["tag_count"])
-    df["sms_category"] = tag_results.apply(lambda x: classify_by_tags(x["unique_tags"]))
-
-    return df
-
-
-if __name__ == "__main__":
-    # Quick demo
-    test_sms = (
-        "VK-CANBNK-T",
-        "An amount of INR 2,000.00 has been DEBITED to your account XXXX8263 "
-        "on 07/09/2024. Total Avail.bal INR 81,123.50.Dial 1930 to report "
-        "cyber fraud - Canara Bank",
-    )
-
-    meta = decode_sender_meta(test_sms[0])
-    tags = get_sms_tags(test_sms[1])
-    category = classify_by_tags(tags["unique_tags"])
-
-    print(f"Sender: {meta['entity_name']}")
-    print(f"Sender Meta: {json.dumps(meta, indent=2)}")
-    print(f"Tags: {tags['occurrence_tag']}")
-    print(f"Category: {category}")

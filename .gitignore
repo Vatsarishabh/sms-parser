@@ -1,9 +1,7 @@
 # Python
-# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-./src/__pycache__/
 *.pyc
 *.pyo
 *.pyd
@@ -14,12 +12,19 @@ __pycache__/
 # IDE
 .idea/
 .vscode/
+*.swp
+*.swo
 
 # Jupyter
 .ipynb_checkpoints/
 
 # Virtual environment
 venv/
+.venv/
 
 # Output artifacts
 output/
+
+# Claude Code
+CLAUDE.md
+.claude/

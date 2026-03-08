@@ -1,12 +1,17 @@
+"""
+transaction.py
+--------------
+Transaction SMS parser for the feature_store_sdk.
+Extracts structured transaction features from SMS body text.
+"""
+
 import re
 
-import pandas as pd
-
-from src.models import TransactionParsed
+from ..models import TransactionParsed
 
 
 def clean_text(text):
-    if not isinstance(text, str) or pd.isna(text):
+    if not isinstance(text, str):
         return ""
     text = re.sub(r'https?://\S+', ' ', text)                 # remove URLs
     text = re.sub(r'\s+', ' ', text).strip()                  # normalize spaces
@@ -53,26 +58,15 @@ def extract_txn_amount(text: str):
 
     t = text
 
-    # Amount needs a txn verb nearby (credited/debited/paid/spent/received/withdrawn/transferred)
-    # Handles:
-    #   "Rs 1,234 credited"            -> pattern 1
-    #   "debited by INR 500"           -> pattern 2
-    #   "INR 550 has been DEBITED"     -> pattern 3  (Canara, SBI style)
-    #   "amount of INR 550 debited"    -> pattern 4
-    #   "Amt Rs. 99 paid"              -> pattern 5
     _TXN_VERB = r"(?:credited|debited|paid|spent|received|withdrawn|transferred)"
     _CCY      = r"(?:rs|inr)\.?"
     _AMT      = r"([\d,]+(?:\.\d{1,2})?)"
     _FILLER   = r"(?:\s+(?:has\s+been|have\s+been|is|are|was|been|successfully))*"
 
     amount_patterns = [
-        # INR 550 credited  /  INR 550 has been DEBITED
         rf"{_CCY}\s*{_AMT}\s*{_FILLER}\s*{_TXN_VERB}\b",
-        # debited by INR 500  /  credited INR 500
         rf"{_TXN_VERB}\s*(?:by\s*)?{_CCY}\s*{_AMT}\b",
-        # amount of INR 550 debited/credited
         rf"amount\s+of\s+{_CCY}\s*{_AMT}\s*{_FILLER}\s*{_TXN_VERB}\b",
-        # Amt/Amount Rs. 99 paid
         rf"\bamt\b[\s:.-]*{_CCY}?\s*{_AMT}\b.*?\b{_TXN_VERB}\b",
     ]
 
@@ -88,9 +82,6 @@ def extract_balance(text: str):
     if not isinstance(text, str) or not text.strip():
         return None
 
-    # Handles:
-    #   "Bal: INR 83,123.50"  /  "Avail.bal INR 83,123.50"  /  "Balance Rs 5000"
-    #   The currency symbol may come BEFORE or AFTER the balance keyword
     p_balance = (
         r"(?:balance|bal|avl|avail\.bal|avail\s+bal|avl\s+bal)"
         r"[\s\.:]* "
@@ -104,11 +95,6 @@ def extract_balance(text: str):
 def extract_avl_limit(text: str):
     """
     Extract the Available Credit Limit from a credit-card spend SMS.
-    Handles patterns like:
-      "Avl Limit: INR 69,404.64"
-      "Available Limit: Rs 50000"
-      "Avl Lmt INR 1,23,456.78"
-    Returns numeric string without commas, or None.
     """
     if not isinstance(text, str) or not text.strip():
         return None
@@ -126,22 +112,13 @@ def extract_avl_limit(text: str):
 def extract_last_bill(text: str):
     """
     Extract the total bill/statement due amount from a credit-card statement SMS.
-    Handles patterns like:
-      "Total of Rs 9,977.40 or minimum of Rs 500.00 is due by 23-MAY-25"
-      "Your bill of INR 5,430 is due"
-      "Total Amount Due: INR 12,345.67"
-    Returns numeric string without commas, or None.
     """
     if not isinstance(text, str) or not text.strip():
         return None
     patterns = [
-        # "Total of Rs 9,977.40 ... is due"
         r"total\s+of\s+(?:rs|inr)\.?\s*([\d,]+(?:\.\d{1,2})?)",
-        # "Total Amount Due: INR 12,345"
         r"total\s+(?:amount\s+)?due[:\s]+(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
-        # "bill of INR 5,430"
         r"bill\s+(?:amount\s+)?(?:of\s+)?(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
-        # "Amount Due Rs 4,000"
         r"amount\s+due[:\s]+(?:(?:rs|inr)\.?\s*)?([\d,]+(?:\.\d{1,2})?)",
     ]
     for p in patterns:
@@ -268,7 +245,9 @@ def parse_transaction(body, address):
         channel = "NEFT"
     elif re.search(r"\bimps\b", t, re.I):
         channel = "IMPS"
-    elif re.search(r"\b(card|visa|mastercard|cc|dc|credit\s+card|debit\s+card|XX\d{4})\b", t, re.I):
+    elif re.search(r"\b(card|visa|mastercard|cc|dc|credit\s+card|debit\s+card)\b", t, re.I):
+        channel = "Card"
+    elif re.search(r"(?<!/c\s)(?<!a/c\s)(?<!ac\s)(?<!acct\s)\bXX\d{4}\b", t, re.I) and not re.search(r"\ba/c\b", t, re.I):
         channel = "Card"
     elif re.search(r"\b(wallet|rupee|eINR|postpaid|paytm\s+add\s+money|amazon\s+pay|phonepe\s+wallet)\b", t, re.I):
         channel = "Wallet"
@@ -282,7 +261,7 @@ def parse_transaction(body, address):
         product = "Loans"
     elif re.search(r"\b(wallet|rupee|eINR|postpaid|paytm\s+add\s+money|amazon\s+pay|phonepe\s+wallet)\b", t, re.I) or "wallet" in t.lower():
         product = "Wallet"
-    elif re.search(r"\b(card|visa|mastercard|cc|dc|credit\s+card|debit\s+card|XX\d{4})\b", t, re.I) or "card" in t.lower():
+    elif (re.search(r"\b(card|visa|mastercard|cc|dc|credit\s+card|debit\s+card)\b", t, re.I) or "card" in t.lower()) and not re.search(r"\ba/c\b", t, re.I):
         product = "Credit Card"
     else:
         product = "Bank Account"
@@ -324,40 +303,6 @@ def parse_transaction(body, address):
     }
 
 
-def analyze_transactions(df):
-    """
-    Accept a DataFrame with columns: body, address, sms_category.
-    Filter to transaction messages, parse each one, and return a clean DataFrame.
-    """
-    required = {"body", "address", "sms_category"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    trans_df = df[df["sms_category"] == "Transactions"].copy()
-
-    _RESULT_COLS = [
-        "_id", "date", "SenderID", "Financial Product", "Transaction Type",
-        "Transaction Subtype", "Amount", "Balance", "Avl Limit", "Last Bill",
-        "Payee", "Reference Number", "Card Number", "Account Number",
-        "Transaction Channel", "Context", "Mandate Flag", "body", "bank_name",
-    ]
-
-    if trans_df.empty:
-        return pd.DataFrame(columns=_RESULT_COLS)
-
-    parsed = trans_df.apply(
-        lambda r: parse_transaction(r.get("body", ""), r.get("address", "")),
-        axis=1,
-        result_type="expand",
-    )
-
-    for col in ("_id", "date", "body", "bank_name"):
-        parsed[col] = trans_df[col].values if col in trans_df.columns else None
-
-    return parsed[[c for c in _RESULT_COLS if c in parsed.columns]]
-
-
 def _safe_float(value):
     """Convert a string or numeric value to float, returning None on failure."""
     if value is None:
@@ -379,7 +324,7 @@ def parse_transaction_model(body, address, base_fields=None):
     address : str
         The sender address / sender ID.
     base_fields : dict, optional
-        Pre-computed SMSBase fields (bank_name, header_code, traffic_type,
+        Pre-computed SMSBase fields (entity_name, header_code, traffic_type,
         occurrence_tag, alphabetical_tag, tag_count, timestamp, etc.)
         to populate on the model.
 

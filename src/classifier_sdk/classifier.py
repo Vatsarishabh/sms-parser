@@ -7,7 +7,7 @@ Defines the abstract interface and concrete implementations.
 parser.py depends on this abstraction, not on any specific classifier.
 
 Usage:
-    from src.classifier import get_classifier
+    from src.classifier_sdk.classifier import get_classifier
 
     clf = get_classifier()                          # default: rule-based
     clf = get_classifier("fasttext", model_path="model.bin")  # future: fastText
@@ -66,7 +66,7 @@ class RuleBasedClassifier(SMSClassifier):
     """
 
     def __init__(self):
-        from src.tagger import _build_automaton, CATEGORY_RULES
+        from .tagger import _build_automaton, CATEGORY_RULES
         self._automaton = _build_automaton()
         self._rules = CATEGORY_RULES
 
@@ -115,12 +115,18 @@ class RuleBasedClassifier(SMSClassifier):
         for category, rule in self._rules.items():
             required_hits = unique_tags & rule["required"]
             boost_hits = unique_tags & rule["boost"]
+            weak_hits = unique_tags & rule.get("weak", set())
+
+            # Need at least one strong required tag, OR 2+ weak tags
             if not required_hits:
-                continue
+                if len(weak_hits) < 2:
+                    continue
+                required_hits = weak_hits
+
             exclude = rule.get("exclude", set())
             if exclude and (unique_tags & exclude):
                 continue
-            score = len(required_hits) * rule["priority"] + len(boost_hits)
+            score = len(required_hits) * rule["priority"] + len(boost_hits) + len(weak_hits)
             # Sender-hint bonus: +3 if the entity name suggests this category
             if _hint and category == _hint:
                 score += 3
@@ -136,7 +142,7 @@ class RuleBasedClassifier(SMSClassifier):
         tags = self._tag(body)
 
         # Derive sender category hint from TRAI header map
-        from src.tagger import decode_sender_meta
+        from .tagger import decode_sender_meta
         meta = decode_sender_meta(address)
         sender_hint = meta.get("sender_category_hint")
 

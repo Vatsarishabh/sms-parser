@@ -1,518 +1,77 @@
-import math
-import pandas as pd
-from datetime import datetime, timezone
+"""
+api.py
+------
+Thin FastAPI orchestrator for the 3-layer SMS parsing SDK.
+
+Endpoints:
+    POST /classify   → Layer 1: classify raw SMS
+    POST /features   → Layer 1 + 2: classify → extract features
+    POST /insights   → Layer 1 + 2 + 3: classify → features → insights
+    POST /analyze    → Alias for /insights (backward compat)
+    GET  /health     → Health check
+"""
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any
 
-from src.tagger import process_sms_df
-from src.parser import parse_sms
-from src.promotion import analyze_promotions, get_promotion_stats
-from src.transaction import analyze_transactions
-from src.banking_summary import monthly_and_overall_insights
-from src.investment import generate_investment_insights
-from src.insurance import generate_insurance_insights
-from src.shopping import generate_shopping_insights, build_shopping_df
-from src.persona import generate_unified_persona
-from src.loan import generate_loan_insights_from_sms
+from src.classifier_sdk import classify_sms
+from src.feature_store_sdk import extract_features
+from src.insights_sdk import generate_insights
 
 app = FastAPI(title="SMS Financial Parser API")
 
 
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
 class SMSRequest(BaseModel):
     sms_data: List[Dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
-# Utils
-# ---------------------------------------------------------------------------
-def sanitize(obj):
-    """Recursively convert NaN / Inf / Timestamps / numpy scalars to JSON-safe types."""
-    if isinstance(obj, dict):
-        return {k: sanitize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [sanitize(i) for i in obj]
-    if isinstance(obj, float):
-        return None if (math.isnan(obj) or math.isinf(obj)) else round(obj, 4)
-    if hasattr(obj, "isoformat"):
-        return str(obj)
-    if hasattr(obj, "item"):
-        return obj.item()
-    return obj
-
-
-def r2(val, fallback=None):
-    """Round to 2 dp; return fallback if None/NaN."""
-    try:
-        if val is None or math.isnan(float(val)):
-            return fallback
-        return round(float(val), 2)
-    except Exception:
-        return fallback
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def _smart_parse_dates(series: pd.Series) -> pd.Series:
-    """Parse dates flexibly: handles epoch ms/ns/s and string formats."""
-    if series is None or series.empty:
-        return series
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series
-    from src.utils import parse_timestamp
-    return pd.to_datetime(series.apply(lambda v: parse_timestamp(v)), errors="coerce")
-
-
-# ---------------------------------------------------------------------------
-# Core pipeline
-# ---------------------------------------------------------------------------
-def run_pipeline(df_raw: pd.DataFrame) -> dict:
-    """
-    Single pass pipeline:
-      1. Separate promotions
-      2. Tag & classify remaining SMS
-      3. Parse each SMS into typed models
-      4. Group by category and generate insights
-    """
-    # Step 1: Separate promotions (by -P suffix + hidden promos)
-    df_promo, df_rest, promo_report = analyze_promotions(df_raw)
-
-    # Step 2: Tag & classify
-    df_tagged = process_sms_df(df_rest)
-    df_tagged["date"] = _smart_parse_dates(df_tagged["date"])
-    df_raw["date"] = _smart_parse_dates(df_raw["date"])
-
-    # Step 3: Parse each SMS through unified parser → typed model dicts
-    parsed_all = []
-    for _, row in df_tagged.iterrows():
-        model = parse_sms(
-            body=row.get("body", ""),
-            address=row.get("address", ""),
-            category=row.get("sms_category"),
-            timestamp=str(row["date"]) if pd.notna(row.get("date")) else None,
-        )
-        parsed_all.append(model.to_dict())
-
-    # Step 4: Group by category
-    grouped = {}
-    for d in parsed_all:
-        cat = d.get("sms_category", "Other")
-        grouped.setdefault(cat, []).append(d)
-
-    # Step 5: Generate insights per domain
-
-    # Banking: uses existing transaction pipeline (DataFrame-based for transaction_summary compat)
-    df_transaction = analyze_transactions(df_tagged)
-    banking_insights = monthly_and_overall_insights(df_transaction) if not df_transaction.empty else {}
-
-    # Investment insights from parsed model dicts
-    investment_dicts = grouped.get("Investments", [])
-    investment_insights = generate_investment_insights(investment_dicts) if investment_dicts else None
-
-    # Insurance insights from parsed model dicts
-    insurance_dicts = grouped.get("Insurance", [])
-    insurance_insights = generate_insurance_insights(insurance_dicts) if insurance_dicts else None
-
-    # Shopping insights: scan ALL parsed SMS for merchant mentions
-    shopping_insights = generate_shopping_insights(parsed_all)
-
-    # Lending insights from parsed model dicts
-    lending_dicts = grouped.get("Lending", [])
-    loan_insights = generate_loan_insights_from_sms(lending_dicts)
-
-    # Unified persona (cross-domain)
-    unified_insights = None
-    if investment_insights and insurance_insights and shopping_insights:
-        shop_df = build_shopping_df(parsed_all)
-        unified_insights = generate_unified_persona(
-            shop_df, shopping_insights, insurance_insights, investment_insights
-        )
-
-    # Promotion stats from promo DataFrame
-    promo_stats = promo_report if isinstance(promo_report, dict) else get_promotion_stats(df_promo)
-
-    # Meta
-    meta = build_meta(
-        df_raw, df_promo, df_rest, df_tagged,
-        investment_insights, insurance_insights, shopping_insights, unified_insights,
-    )
-
-    return {
-        "meta": meta,
-        "promo_stats": promo_stats,
-        "banking_insights": banking_insights,
-        "investment_insights": investment_insights,
-        "insurance_insights": insurance_insights,
-        "shopping_insights": shopping_insights,
-        "loan_insights": loan_insights,
-        "unified_insights": unified_insights,
-        "parsed_count_by_category": {k: len(v) for k, v in grouped.items()},
-    }
-
-
-# ---------------------------------------------------------------------------
-# Meta builder
-# ---------------------------------------------------------------------------
-def build_meta(df_raw, df_promo, df_rest, df_tagged,
-               invest_insights, insur_insights, shop_insights, unified_insights):
-
-    processed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    date_range = {"from": None, "to": None}
-    if "date" in df_raw.columns:
-        dates = df_raw["date"].dropna()
-        if not dates.empty:
-            date_range = {
-                "from": dates.min().strftime("%Y-%m-%d"),
-                "to": dates.max().strftime("%Y-%m-%d"),
-            }
-
-    domain_status = {
-        "banking": True,
-        "investment": invest_insights is not None,
-        "insurance": insur_insights is not None,
-        "shopping": shop_insights is not None,
-        "unified_persona": unified_insights is not None,
-    }
-
-    category_counts = {}
-    if df_tagged is not None and "sms_category" in df_tagged.columns:
-        counts = df_tagged["sms_category"].value_counts().to_dict()
-        category_counts = {str(k).lower().replace(" ", "_"): int(v) for k, v in counts.items()}
-
-    return {
-        "processed_at": processed_at,
-        "date_range": date_range,
-        "sms_counts": {
-            "total_received": len(df_raw),
-            "promotional_filtered": len(df_promo),
-            **category_counts,
-        },
-        "unique_senders": int(df_raw["address"].nunique()) if "address" in df_raw.columns else 0,
-        "domains_analyzed": [d for d, ok in domain_status.items() if ok],
-        "domains_skipped": [d for d, ok in domain_status.items() if not ok],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Response formatters
-# ---------------------------------------------------------------------------
-def fmt_promotional(promo: dict):
-    if not promo:
-        return None
-    return {
-        "total_messages": promo.get("total_promotional_messages", 0),
-        "breakdown": {
-            "credit_card": promo.get("credit_card_messages", 0),
-            "offer_or_discount": promo.get("offer_or_discount_messages", 0),
-            "lending_app": promo.get("lending_app_messages", 0),
-            "other": promo.get("other_messages", 0),
-        },
-        "avg_limit_offers": {
-            "credit_card_last5": r2(promo.get("avg_last5_cc_limit", 0)),
-            "lending_app_last5": r2(promo.get("avg_last5_lending_limit", 0)),
-        },
-    }
-
-
-def fmt_banking(b: dict):
-    if not b:
-        return None
-
-    def window(data, rows):
-        return {
-            "rows_analyzed": rows,
-            "spend": {
-                "total": r2(data.get("spend_total", 0)),
-                "txn_count": int(data.get("spend_txn_count", 0)),
-                "avg_per_txn": r2(data.get("avg_spend_per_txn")),
-            },
-            "earn": {
-                "total": r2(data.get("earn_total", 0)),
-                "txn_count": int(data.get("earn_txn_count", 0)),
-                "avg_per_txn": r2(data.get("avg_earn_per_txn")),
-            },
-            "top_channel": data.get("top_channel"),
-        }
-
-    def channel(data):
-        return {
-            "upi": {
-                "spend_total": r2(data.get("upi_spend_total", 0)),
-                "txn_count": int(data.get("upi_spend_txn_count", 0)),
-                "avg_ticket": r2(data.get("upi_ticket_size")),
-            },
-            "credit_card": {
-                "spend_total": r2(data.get("cc_spend_total", 0)),
-                "txn_count": int(data.get("cc_spend_txn_count", 0)),
-                "avg_ticket": r2(data.get("cc_ticket_size")),
-            },
-        }
-
-    overall = b.get("overall", {})
-    last_month = b.get("last_month", {})
-
-    bank_details = b.get("bank_account_details", [])
-    raw_card_details = b.get("credit_card_details", [])
-
-    cards_with_values = []
-    cards_empty = []
-    for c in raw_card_details:
-        v_bal = c.get("balance", {}).get("value")
-        v_bill = c.get("last_bill", {}).get("value")
-        v_limit = c.get("credit_limit", {}).get("value")
-        if v_bal is not None or v_bill is not None or v_limit is not None:
-            cards_with_values.append(c)
-        else:
-            cards_empty.append(c)
-
-    est_total_cc = int(overall.get("num_credit_cards", 0))
-    target_count = max(len(cards_with_values), est_total_cc)
-    final_cards = cards_with_values[:]
-    if len(final_cards) < target_count:
-        needed = target_count - len(final_cards)
-        final_cards.extend(cards_empty[:needed])
-
-    return {
-        "accounts": {
-            "bank_accounts": {
-                "total": int(overall.get("num_bank_accounts", 0)),
-                "details": bank_details,
-            },
-            "credit_cards": {
-                "total": len(final_cards),
-                "details": final_cards,
-            },
-        },
-        "cash_flow": {
-            "overall": window(overall, b.get("overall_rows", 0)),
-            "last_month": window(last_month, b.get("last_month_rows", 0)),
-        },
-        "channel_breakdown": {
-            "overall": channel(overall),
-            "last_month": channel(last_month),
-        },
-    }
-
-
-def fmt_investment(inv: dict):
-    if not inv:
-        return None
-
-    ph = inv.get("Portfolio_Health", {})
-    rs = inv.get("Recency_Signal", {})
-    hs = inv.get("Habit_Signal", {})
-    vm = inv.get("Velocity_Metrics", {})
-    rel = inv.get("Reliability_Signals", {})
-
-    raw_share = ph.get("Asset_Wallet_Share", {})
-    wallet_share = {
-        k.lower().replace(" ", "_") + "_pct": r2(v)
-        for k, v in raw_share.items()
-    }
-
-    tenure_raw = hs.get("Total_Investment_Tenure", "0 days")
-    tenure_days = int(tenure_raw.split()[0]) if tenure_raw else None
-
-    gap_raw = hs.get("Average_Gap_Between_Actions", "0 days")
-    avg_gap = float(gap_raw.split()[0]) if gap_raw and gap_raw != "N/A" else None
-
-    sip_raw = rel.get("Predicted_SIP_Date", "")
-    try:
-        predicted_sip_day = int(sip_raw.split()[1])
-    except Exception:
-        predicted_sip_day = None
-
-    return {
-        "portfolio": {
-            "total_invested": r2(ph.get("Total_Invested_Value", 0)),
-            "dominant_asset": ph.get("Dominant_Asset"),
-            "wallet_share": wallet_share,
-        },
-        "activity": {
-            "last_action_date": rs.get("Last_Activity_Date"),
-            "days_since_last_action": int(rs.get("Days_Since_Last_Action", 0)),
-            "status": rs.get("Status"),
-            "tenure_days": tenure_days,
-            "avg_gap_between_actions_days": avg_gap,
-            "stability_score": hs.get("Stability_Score"),
-        },
-        "velocity": {
-            "monthly_commitment_l3m": r2(vm.get("Verified_Monthly_Commitment_L3M", 0)),
-            "avg_transaction_size": r2(vm.get("Avg_Transaction_Size", 0)),
-        },
-        "reliability": {
-            "mandate_realization_rate": rel.get("Mandate_Realization_Rate"),
-            "predicted_sip_day": predicted_sip_day,
-            "mandate_count": int(rel.get("Mandate_Frequency_Count", 0)),
-            "total_engagement_points": int(rel.get("Total_Engagement_Points", 0)),
-        },
-    }
-
-
-def fmt_insurance(ins: dict):
-    if not ins:
-        return None
-    return {
-        "coverage": {
-            "total_premium_liability": r2(ins.get("Total_Premium_Liability", 0)),
-            "peak_liability_quarter": ins.get("Peak_Liability_Quarter"),
-            "premium_concentration_index": r2(ins.get("Premium_Concentration_Index", 0)),
-        },
-        "household": {
-            "size": int(ins.get("Identified_Household_Size", 0)),
-            "avg_cost_per_member": r2(ins.get("Avg_Cost_Per_Member", 0)),
-        },
-        "engagement": {
-            "wellness_index_pct": r2(ins.get("Wellness_Engagement_Index", 0)),
-            "health_to_life_ratio": r2(ins.get("Health_to_Life_Engagement_Ratio", 0)),
-        },
-    }
-
-
-def fmt_shopping(shop: dict):
-    if not shop:
-        return None
-
-    raw_burn = shop.get("Total_Monthly_Burn_L3M", {})
-    monthly_burn = {}
-    for k, v in raw_burn.items():
-        try:
-            monthly_burn[k] = int(str(v).replace("Rs", "").strip())
-        except Exception:
-            monthly_burn[k] = v
-
-    raw_ticket = shop.get("Avg_Ticket_Credit_vs_UPI", {})
-    avg_ticket = {
-        "bank_upi": r2(raw_ticket.get("Bank/UPI")),
-        "credit_card": r2(raw_ticket.get("Credit Card")),
-    }
-
-    aci = shop.get("Aggregator_Conflict_Index", {})
-
-    return {
-        "monthly_burn_l3m": monthly_burn,
-        "merchants": {
-            "dominant": shop.get("Dominant_Merchant"),
-            "merchants_switch_count": int(aci.get("Total_Brand_Switches", 0)),
-            "merchants_switch_ratio": r2(aci.get("Switch_Consistency_Ratio", 0)),
-        },
-        "behavior": {
-            "refund_rate_pct": r2(shop.get("Refund_Rate_Percentage", 0)),
-            "weekend_spend_ratio": r2(shop.get("Weekend_Spend_Ratio", 0)),
-            "late_night_orders": int(shop.get("Late_Night_Order_Count", 0)),
-            "payday_splurge_velocity": r2(shop.get("Payday_Splurge_Velocity", 0)),
-            "impulse_purchase_index_pct": r2(shop.get("Impulse_Purchase_Index", 0)),
-            "last_30d_order_count": int(shop.get("Latest_30d_Velocity", 0)),
-        },
-        "avg_ticket_by_instrument": avg_ticket,
-    }
-
-
-def fmt_unified(uni: dict):
-    if not uni:
-        return None
-
-    up = uni.get("Unified_Persona", {})
-    cdm = uni.get("Cross_Domain_Metrics", {})
-    vhi_raw = cdm.get("Value_Hunting_Intensity", "0%")
-    try:
-        vhi = float(str(vhi_raw).replace("%", "").strip())
-    except Exception:
-        vhi = None
-
-    return {
-        "segment": up.get("Segment"),
-        "disposable_income_health": up.get("Disposable_Income_Health"),
-        "scores": {
-            "future_proof_score": r2(cdm.get("Future_Proof_Score", 0)),
-            "burn_to_build_multiple": r2(cdm.get("Burn_to_Build_Multiple", 0)),
-            "value_hunting_intensity_pct": vhi,
-            "liquidity_conflict_risk": cdm.get("Liquidity_Conflict_Risk"),
-        },
-    }
-
-
-def fmt_loan(loan: dict):
-    if not loan:
-        return None
-
-    def _acc(prefix, idx):
-        s = f"_acc{idx}"
-        acc = {
-            "account_id": loan.get(f"{prefix}{s}"),
-            "emi": r2(loan.get(f"{prefix}{s}_emi")),
-            "emi_latest_duedate": loan.get(f"{prefix}{s}_emi_latest_duedate"),
-            "max_dpd": loan.get(f"{prefix}{s}_max_dpd"),
-        }
-        credit_limit = loan.get(f"{prefix}{s}_max_credit_limit")
-        if credit_limit is not None:
-            acc["max_credit_limit"] = r2(credit_limit)
-        return acc
-
-    def _product(prefix, has_credit_limit=True):
-        cnt = loan.get(f"{prefix}_cnt_accounts") or 0
-        block = {
-            "flag": loan.get(f"{prefix}_flag"),
-            "cnt_accounts": cnt,
-            "sms_recency": loan.get(f"{prefix}_sms_recency"),
-            "sms_vintage": loan.get(f"{prefix}_sms_vintage"),
-            "accounts": [_acc(prefix, i) for i in range(1, cnt + 1)],
-        }
-        if has_credit_limit:
-            block["limit_decrease"] = loan.get(f"{prefix}_limit_decrease")
-            block["limit_decreased_recency"] = loan.get(f"{prefix}_limit_decreased_recency")
-            block["limit_increase"] = loan.get(f"{prefix}_limit_increase")
-            block["limit_increased_recency"] = loan.get(f"{prefix}_limit_increased_recency")
-        return block
-
-    return {
-        "delinquency": {
-            "cnt_delinquent_c30": loan.get("cnt_delinquncy_loan_c30"),
-            "cnt_delinquent_c60": loan.get("cnt_delinquncy_loan_c60"),
-            "cnt_overdue_senders_c60": loan.get("cnt_overdue_senders_c60"),
-        },
-        "approvals": {
-            "cnt_approved_c30": loan.get("cnt_loan_approved_c30"),
-            "cnt_rejected_c30": loan.get("cnt_loan_rejected_c30"),
-        },
-        "primary_loan_emi": r2(loan.get("emi_loan_acc1")),
-        "credit": _product("credit", has_credit_limit=True),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Master response formatter
-# ---------------------------------------------------------------------------
-def format_response(pipeline_result: dict):
-    return sanitize({
-        "meta": pipeline_result["meta"],
-        "promotional_insights": fmt_promotional(pipeline_result["promo_stats"]),
-        "banking_insights": fmt_banking(pipeline_result["banking_insights"]),
-        "investment_insights": fmt_investment(pipeline_result["investment_insights"]),
-        "insurance_insights": fmt_insurance(pipeline_result["insurance_insights"]),
-        "shopping_insights": fmt_shopping(pipeline_result["shopping_insights"]),
-        "loan_insights": fmt_loan(pipeline_result["loan_insights"]),
-        "unified_persona": fmt_unified(pipeline_result["unified_insights"]),
-        "parsed_count_by_category": pipeline_result["parsed_count_by_category"],
-    })
-
-
-# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
-@app.post("/analyze")
-def analyze(request: SMSRequest):
+@app.post("/classify")
+def classify(request: SMSRequest):
+    """Layer 1: Classify raw SMS messages."""
     if not request.sms_data:
         raise HTTPException(status_code=400, detail="sms_data cannot be empty")
-
     try:
-        df_raw = pd.DataFrame(request.sms_data)
-        result = run_pipeline(df_raw)
-        return format_response(result)
+        return classify_sms(request.sms_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/features")
+def features(request: SMSRequest):
+    """Layer 1 + 2: Classify → Extract features."""
+    if not request.sms_data:
+        raise HTTPException(status_code=400, detail="sms_data cannot be empty")
+    try:
+        classified = classify_sms(request.sms_data)
+        return extract_features(classified)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/insights")
+def insights(request: SMSRequest):
+    """Layer 1 + 2 + 3: Classify → Features → Insights."""
+    if not request.sms_data:
+        raise HTTPException(status_code=400, detail="sms_data cannot be empty")
+    try:
+        classified = classify_sms(request.sms_data)
+        feature_store = extract_features(classified)
+        return generate_insights(feature_store)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/analyze")
+def analyze(request: SMSRequest):
+    """Full pipeline (alias for /insights)."""
+    return insights(request)
 
 
 @app.get("/health")
