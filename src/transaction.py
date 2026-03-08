@@ -1,9 +1,10 @@
 import re
+
 import pandas as pd
 
-# -----------------------------
-# 1) Cleaner (small upgrades)
-# -----------------------------
+from src.models import TransactionParsed
+
+
 def clean_text(text):
     if not isinstance(text, str) or pd.isna(text):
         return ""
@@ -31,9 +32,7 @@ def first_group(pattern, text, flags=re.I):
         return None
     return m.group(1) if m.lastindex else m.group(0)
 
-# -----------------------------
-# 3) Reference extraction (keep yours)
-# -----------------------------
+
 def extract_reference(text):
     m = re.search(r"([A-Z]{3,6}\d{11}|\b\d{10,12}\b|Ref[:\s-]*(\d+)|UTR[:\s-]*(\d+))", text, re.I)
     if not m:
@@ -44,9 +43,6 @@ def extract_reference(text):
     return ref or None
 
 
-# -----------------------------
-# 4) Amount extraction
-# -----------------------------
 def extract_txn_amount(text: str):
     """
     Extract amount tied to a real transaction verb
@@ -59,11 +55,11 @@ def extract_txn_amount(text: str):
 
     # Amount needs a txn verb nearby (credited/debited/paid/spent/received/withdrawn/transferred)
     # Handles:
-    #   "Rs 1,234 credited"            → pattern 1
-    #   "debited by INR 500"           → pattern 2
-    #   "INR 550 has been DEBITED"     → pattern 3  (Canara, SBI style)
-    #   "amount of INR 550 debited"    → pattern 4
-    #   "Amt Rs. 99 paid"              → pattern 5
+    #   "Rs 1,234 credited"            -> pattern 1
+    #   "debited by INR 500"           -> pattern 2
+    #   "INR 550 has been DEBITED"     -> pattern 3  (Canara, SBI style)
+    #   "amount of INR 550 debited"    -> pattern 4
+    #   "Amt Rs. 99 paid"              -> pattern 5
     _TXN_VERB = r"(?:credited|debited|paid|spent|received|withdrawn|transferred)"
     _CCY      = r"(?:rs|inr)\.?"
     _AMT      = r"([\d,]+(?:\.\d{1,2})?)"
@@ -154,10 +150,7 @@ def extract_last_bill(text: str):
             return m.group(1).replace(",", "")
     return None
 
-# -----------------------------
-# 5) Your payer/payee + subtype functions can remain
-# (keeping minimal changes)
-# -----------------------------
+
 def extract_payer_payee(text):
     payer, payee = None, None
 
@@ -239,14 +232,9 @@ def get_transaction_subtype(text, txn_type, mandate_flag, channel, product):
     return "General"
 
 
-# -----------------------------
-# 6) parse_transaction
-# (offer/marketing messages are filtered upstream in promotion_analysis)
-# -----------------------------
 def parse_transaction(body, address):
     t = clean_text(body)
 
-    # account/card snippets (kept from your version)
     p_acc   = r"(?:a/c|ac|acc|no|card|wallet|X+|[\*]+)\s*(\d{3,4})\b"
     p_card4 = r"(?:card|ending\s+with)\s*(?:X+|[\*]+)?\s*(\d{4})\b"
 
@@ -261,7 +249,7 @@ def parse_transaction(body, address):
 
     mandate_flag = bool(re.search(r"\b(mandate|standing\s+instruction|autopay|si)\b", t, re.I))
 
-    # Transaction Type (unchanged logic)
+    # Transaction Type
     if re.search(r"\b(mandate\s+alert|standing\s+instruction\s+alert)\b", t, re.I):
         txn_type = "Mandate Alert"
     elif re.search(r"\b(mandate\s+initiation|set\s+up\s+mandate|mandate\s+set)\b", t, re.I):
@@ -334,42 +322,106 @@ def parse_transaction(body, address):
         "Context": context,
         "Mandate Flag": mandate_flag,
     }
-def analyze_transactions(df):
-    df = df.copy()
 
+
+def analyze_transactions(df):
+    """
+    Accept a DataFrame with columns: body, address, sms_category.
+    Filter to transaction messages, parse each one, and return a clean DataFrame.
+    """
     required = {"body", "address", "sms_category"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
     trans_df = df[df["sms_category"] == "Transactions"].copy()
-    print(f"Found {len(trans_df)} transaction messages.")
+
+    _RESULT_COLS = [
+        "_id", "date", "SenderID", "Financial Product", "Transaction Type",
+        "Transaction Subtype", "Amount", "Balance", "Avl Limit", "Last Bill",
+        "Payee", "Reference Number", "Card Number", "Account Number",
+        "Transaction Channel", "Context", "Mandate Flag", "body", "bank_name",
+    ]
 
     if trans_df.empty:
-        cols = [
-            "_id","date","SenderID","Financial Product","Transaction Type","Transaction Subtype",
-            "Amount","Balance","Avl Limit","Last Bill","Payee","Reference Number",
-            "Card Number","Account Number","Transaction Channel","Context","Mandate Flag",
-            "body","bank_name"
-        ]
-        return pd.DataFrame(columns=cols)
+        return pd.DataFrame(columns=_RESULT_COLS)
 
     parsed = trans_df.apply(
         lambda r: parse_transaction(r.get("body", ""), r.get("address", "")),
         axis=1,
-        result_type="expand"
+        result_type="expand",
     )
 
-    # attach original columns if present
-    for c in ["_id", "date", "body", "bank_name"]:
-        parsed[c] = trans_df[c].values if c in trans_df.columns else None
+    for col in ("_id", "date", "body", "bank_name"):
+        parsed[col] = trans_df[col].values if col in trans_df.columns else None
 
-    cols = [
-        "_id","date","SenderID","Financial Product","Transaction Type","Transaction Subtype",
-        "Amount","Balance","Avl Limit","Last Bill","Payee","Reference Number",
-        "Card Number","Account Number","Transaction Channel","Context","Mandate Flag",
-        "body","bank_name"
-    ]
-    parsed = parsed[[c for c in cols if c in parsed.columns]]
+    return parsed[[c for c in _RESULT_COLS if c in parsed.columns]]
 
-    return parsed
+
+def _safe_float(value):
+    """Convert a string or numeric value to float, returning None on failure."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def parse_transaction_model(body, address, base_fields=None):
+    """
+    Parse a transaction SMS and return a TransactionParsed dataclass instance.
+
+    Parameters
+    ----------
+    body : str
+        The SMS body text.
+    address : str
+        The sender address / sender ID.
+    base_fields : dict, optional
+        Pre-computed SMSBase fields (bank_name, header_code, traffic_type,
+        occurrence_tag, alphabetical_tag, tag_count, timestamp, etc.)
+        to populate on the model.
+
+    Returns
+    -------
+    TransactionParsed
+    """
+    result = parse_transaction(body, address)
+
+    # Determine payer via extract_payer_payee
+    payer, _ = extract_payer_payee(clean_text(body))
+
+    # Determine salary flag
+    txn_type = result.get("Transaction Type")
+    salary = is_salary_credit(body, txn_type)
+
+    # Build the dataclass keyword arguments from the parsed dict
+    kwargs = dict(
+        raw_body=body or "",
+        sender_address=address or "",
+        txn_type=txn_type,
+        txn_subtype=result.get("Transaction Subtype"),
+        amount=_safe_float(result.get("Amount")),
+        balance=_safe_float(result.get("Balance")),
+        avl_limit=_safe_float(result.get("Avl Limit")),
+        last_bill=_safe_float(result.get("Last Bill")),
+        account_number=result.get("Account Number"),
+        card_number=result.get("Card Number"),
+        financial_product=result.get("Financial Product"),
+        txn_channel=result.get("Transaction Channel"),
+        reference_number=result.get("Reference Number"),
+        payee=result.get("Payee"),
+        payer=payer,
+        context=result.get("Context"),
+        mandate_flag=result.get("Mandate Flag", False),
+        is_salary=salary,
+    )
+
+    # Overlay any pre-computed SMSBase fields
+    if base_fields and isinstance(base_fields, dict):
+        for key, value in base_fields.items():
+            if hasattr(TransactionParsed, key):
+                kwargs[key] = value
+
+    return TransactionParsed(**kwargs)

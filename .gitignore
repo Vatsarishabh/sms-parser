@@ -17,3 +17,9 @@ __pycache__/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Virtual environment
+venv/
+
+# Output artifacts
+output/

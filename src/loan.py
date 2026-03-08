@@ -207,7 +207,7 @@ def generate_loan_insights() -> dict:
 
     # ── Step 2: derive totals from actual account data ────────────────────────
     total_accounts = (
-        credit_block.get("credit_cnt_accounts", 0) 
+        credit_block.get("credit_cnt_accounts", 0)
         # ggives_block.get("ggives_cnt_accounts",   0) +
         # gloan_block.get("gloan_cnt_accounts",     0)
     )
@@ -245,8 +245,38 @@ def generate_loan_insights() -> dict:
     insights["cnt_delinquncy_loan_c30"] = c30_delinq
     insights["cnt_delinquncy_loan_c60"] = c60_delinq
     insights["cnt_overdue_senders_c60"] = c60_delinq  # directly mapping overdue senders to delinquent active accounts
-    
+
     insights["cnt_loan_approved_c30"]   = approvals_c30
     insights["cnt_loan_rejected_c30"]   = random.randint(0, 1) if any_active else 0
+
+    return insights
+
+
+def generate_loan_insights_from_sms(parsed_dicts):
+    """Generate loan insights from LendingParsed dicts. Falls back to random if insufficient data."""
+    if not parsed_dicts:
+        return generate_loan_insights()
+
+    has_event = any(d.get("event_type") for d in parsed_dicts)
+    if not has_event:
+        return generate_loan_insights()
+
+    loan_accounts = {d["loan_account"] for d in parsed_dicts if d.get("loan_account")}
+    total_loans = len(loan_accounts)
+
+    if total_loans == 0:
+        return generate_loan_insights()
+
+    # Build insights from real data
+    insights = generate_loan_insights()  # start with random base
+
+    # Override with real EMI data where available
+    emi_amounts = [d["emi_amount"] for d in parsed_dicts if d.get("emi_amount") is not None]
+    if emi_amounts:
+        insights["emi_loan_acc1"] = float(emi_amounts[0])
+
+    c30_delinq = sum(1 for d in parsed_dicts if d.get("is_overdue"))
+    insights["cnt_delinquncy_loan_c30"] = min(c30_delinq, total_loans)
+    insights["cnt_delinquncy_loan_c60"] = min(c30_delinq, total_loans)
 
     return insights

@@ -249,8 +249,8 @@ def render_dashboard(data: dict):
                 pc1.metric("User Segment", persona.get("segment", "N/A"))
                 pc2.metric("Disposable Income Health", persona.get("disposable_income_health", "N/A"))
                 scores = persona.get("scores") or {}
-                pc1.metric("Future-Proof Score", f"{scores.get('future_proof_score', 0):.2f}")
-                pc2.metric("Burn-to-Build Multiple", f"{scores.get('burn_to_build_multiple', 0):.2f}")
+                pc1.metric("Future-Proof Score", f"{(scores.get('future_proof_score') or 0):.2f}")
+                pc2.metric("Burn-to-Build Multiple", f"{(scores.get('burn_to_build_multiple') or 0):.2f}")
 
     # ──────────────────────────────────────────────────────────────────
     # BANKING TAB

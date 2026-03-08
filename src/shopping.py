@@ -1,59 +1,88 @@
 import re
 import pandas as pd
+from src.utils import parse_timestamp
 
-def parse_shopping_sms(dataframe: pd.DataFrame):
-    df = dataframe.copy()
-    def extract_shopping_features(row):
-        msg = row['body']
-        if pd.isna(msg):
-            return pd.Series([None, None, None, None, None])
+KNOWN_MERCHANTS = {
+    "zomato": "Zomato", "swiggy": "Swiggy", "amazon": "Amazon",
+    "flipkart": "Flipkart", "myntra": "Myntra", "bigbasket": "BigBasket",
+    "blinkit": "Blinkit", "nykaa": "Nykaa", "ajio": "Ajio", "meesho": "Meesho",
+    "croma": "Croma",
+}
 
-        # 1. Identify Merchant
-        merchant = None
-        if "ZOMATO" in msg.upper(): merchant = "Zomato"
-        elif "SWIGGY" in msg.upper(): merchant = "Swiggy"
-        elif "AMAZON" in msg.upper(): merchant = "Amazon"
+def identify_merchant(text):
+    """Identify merchant from SMS body text."""
+    if not isinstance(text, str):
+        return None
+    t = text.lower()
+    for key, name in KNOWN_MERCHANTS.items():
+        if key in t:
+            return name
+    return None
 
-        is_spend, is_refund, amount, source = None, None, None, None
+def build_shopping_df(parsed_dicts):
+    """Build a shopping DataFrame from a list of parsed SMS dicts (any category).
 
-        if merchant:
-          # 2. Identify Direction
-          is_spend = False
-          is_refund = False
-          if any(x in msg.lower() for x in ["spent", "paid", "debited", "spent@"]):
-              is_spend = True
-          elif any(x in msg.lower() for x in ["refund", "credited", "initiated"]):
-              is_refund = True
+    Scans raw_body for known merchants and extracts shopping features.
+    Works with TransactionParsed dicts or any dict with 'raw_body', 'timestamp', 'amount' keys.
+    """
+    rows = []
+    for d in parsed_dicts:
+        merchant = identify_merchant(d.get("raw_body", ""))
+        if not merchant:
+            continue
 
-          # Filter out Noise (OTPs, Standing Instructions, Bookings)
-          if any(x in msg.lower() for x in ["otp", "standing instructions", "slot booked", "to accept"]):
-              is_spend = False
-              is_refund = False
+        body = d.get("raw_body", "").lower()
+        is_spend = False
+        is_refund = False
 
-          # 3. Extract Amount
-          amount = None
-          if is_spend or is_refund:
-              amt_match = re.search(r'(?:INR|Rs\.?)\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', msg, re.I)
-              if amt_match:
-                  amount = float(amt_match.group(1).replace(',', ''))
+        if any(x in body for x in ["spent", "paid", "debited", "spent@"]):
+            is_spend = True
+        elif any(x in body for x in ["refund", "credited", "initiated"]):
+            is_refund = True
 
-        # 4. Source of Funds
+        # Filter noise
+        if any(x in body for x in ["otp", "standing instructions", "slot booked", "to accept"]):
+            is_spend = False
+            is_refund = False
+
+        amount = d.get("amount")
+        if amount is None and (is_spend or is_refund):
+            amt_match = re.search(r'(?:INR|Rs\.?)\s?(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)', d.get("raw_body", ""), re.I)
+            if amt_match:
+                amount = float(amt_match.group(1).replace(',', ''))
+
         source = None
-        if "Card XX" in msg: source = "Credit Card"
-        elif "A/C XX" in msg or "UPI" in msg: source = "Bank/UPI"
+        raw = d.get("raw_body", "")
+        if "Card XX" in raw:
+            source = "Credit Card"
+        elif "A/C XX" in raw or "UPI" in raw:
+            source = "Bank/UPI"
 
-        return pd.Series([merchant, is_spend, is_refund, amount, source])
+        rows.append({
+            "date": d.get("timestamp"),
+            "shopping_merchant": merchant,
+            "shopping_is_spend": is_spend,
+            "shopping_is_refund": is_refund,
+            "shopping_amount": amount,
+            "shopping_source": source,
+        })
 
-    df[['shopping_merchant', 'shopping_is_spend', 'shopping_is_refund', 'shopping_amount', 'shopping_source']] = df.apply(extract_shopping_features, axis=1)
-    return df
-    
-def generate_shopping_insights(df):
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["date","shopping_merchant","shopping_is_spend","shopping_is_refund","shopping_amount","shopping_source"])
+
+def generate_shopping_insights(data):
+    """Generate shopping insights from a shopping DataFrame or list of parsed dicts."""
+    if isinstance(data, list):
+        df = build_shopping_df(data)
+    else:
+        df = data
+
     # Ensure date is datetime and filter for shopping only
     shop_df = df[df['shopping_merchant'].notna()].copy()
     if shop_df.empty:
         return None
-        
-    shop_df['date'] = pd.to_datetime(shop_df['date'])
+
+    shop_df['date'] = shop_df['date'].apply(lambda v: parse_timestamp(v))
+    shop_df['date'] = pd.to_datetime(shop_df['date'], errors='coerce')
     shop_df = shop_df.sort_values('date').reset_index(drop=True)
 
     # 1. Feature Preparation
@@ -70,12 +99,12 @@ def generate_shopping_insights(df):
 
     spend_count = shop_df['shopping_is_spend'].sum()
     refund_ratio = (shop_df['shopping_is_refund'].sum() / spend_count * 100) if spend_count > 0 else 0
-    
+
     top_merchant = shop_df.groupby('shopping_merchant')['net_amt'].sum().idxmax() if not shop_df.empty else "N/A"
 
     weekday_spend = shop_df[~shop_df['is_weekend']]['net_amt'].sum()
     weekend_ratio = shop_df[shop_df['is_weekend']]['net_amt'].sum() / weekday_spend if weekday_spend > 0 else 0
-    
+
     avg_ticket_instrument = shop_df.groupby('shopping_source')['net_amt'].mean()
     late_night_orders = len(shop_df[shop_df['hour'].isin([23, 0, 1, 2, 3])])
 

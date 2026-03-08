@@ -2,9 +2,9 @@ import math
 import numpy as np
 import pandas as pd
 
-# =========================
-# 1) PREP + WINDOWING
-# =========================
+from src.utils import parse_timestamp
+
+
 def prep_txn_df(txn_df: pd.DataFrame) -> pd.DataFrame:
     """
     - Amount -> numeric
@@ -12,7 +12,12 @@ def prep_txn_df(txn_df: pd.DataFrame) -> pd.DataFrame:
     """
     df = txn_df.copy()
     df["Amount"] = pd.to_numeric(df.get("Amount"), errors="coerce")
-    df["date_dt"] = pd.to_datetime(df.get("date"), unit="ms", errors="coerce").dt.normalize()
+    raw_date = df.get("date")
+    if pd.api.types.is_datetime64_any_dtype(raw_date):
+        df["date_dt"] = raw_date.dt.normalize()
+    else:
+        df["date_dt"] = raw_date.apply(lambda v: parse_timestamp(v))
+        df["date_dt"] = pd.to_datetime(df["date_dt"], errors="coerce").dt.normalize()
     return df
 
 
@@ -26,9 +31,6 @@ def slice_last_month(df: pd.DataFrame) -> pd.DataFrame:
     return df[(df["date_dt"] >= first_day_last_month) & (df["date_dt"] < first_day_this_month)].copy()
 
 
-# =========================
-# 2) ID HELPERS
-# =========================
 def _clean_id_series(s: pd.Series) -> pd.Series:
     if s is None:
         return pd.Series(dtype="object")
@@ -41,9 +43,6 @@ def _clean_id_series(s: pd.Series) -> pd.Series:
     )
 
 
-# =========================
-# 3) BANK + CARD COUNT (NO EXTRA FEATURES RETURNED)
-# =========================
 def compute_num_bank_accounts(df: pd.DataFrame) -> int:
     """
     bank_acct_like = Financial Product != 'Credit Card'
@@ -58,10 +57,6 @@ def compute_num_bank_accounts(df: pd.DataFrame) -> int:
 
 def compute_num_credit_cards_from_accounts(df: pd.DataFrame, num_bank_accounts: int) -> int:
     """
-    Uses your 'above logic' BUT DOES NOT RETURN:
-      total_unique_account_numbers
-      remaining_accounts_est
-
     num_credit_cards = max(total_unique_account_numbers - num_bank_accounts, 0)
 
     NOTE: This is an estimate if your 'Account Number' column mixes bank A/C and card last4 etc.
@@ -73,7 +68,7 @@ def compute_num_credit_cards_from_accounts(df: pd.DataFrame, num_bank_accounts: 
     return int(max(total_unique_account_numbers - int(num_bank_accounts), 0))
 
 
-def cc_like_mask(df: pd.DataFrame) -> bool:
+def cc_like_mask(df: pd.DataFrame) -> pd.Series:
     """
     Rows that look like they belong to credit card activity.
     """
@@ -84,9 +79,6 @@ def cc_like_mask(df: pd.DataFrame) -> bool:
     )
 
 
-# =========================
-# 3b) ACCOUNT / CARD DETAILS
-# =========================
 def build_account_details(df: pd.DataFrame) -> tuple:
     """
     Returns (bank_account_details, credit_card_details).
@@ -118,24 +110,20 @@ def build_account_details(df: pd.DataFrame) -> tuple:
     if df.empty:
         return bank_details, card_details
 
-    # helpers
-    def _to_float(v):
-        try:
-            f = float(str(v).replace(",", ""))
-            return f if pd.notna(f) else None
-        except Exception:
-            return None
-
     def _iso(ts):
         try:
             return pd.Timestamp(ts).isoformat() if pd.notna(ts) else None
         except Exception:
             return None
 
-    # ensure date_dt exists
     if "date_dt" not in df.columns:
         df = df.copy()
-        df["date_dt"] = pd.to_datetime(df.get("date"), unit="ms", errors="coerce")
+        raw_date = df.get("date")
+        if pd.api.types.is_datetime64_any_dtype(raw_date):
+            df["date_dt"] = raw_date.dt.normalize()
+        else:
+            df["date_dt"] = raw_date.apply(lambda v: parse_timestamp(v))
+            df["date_dt"] = pd.to_datetime(df["date_dt"], errors="coerce")
 
     if "Account Number" not in df.columns:
         return bank_details, card_details
@@ -150,16 +138,13 @@ def build_account_details(df: pd.DataFrame) -> tuple:
     cleaned = cleaned.sort_values("date_dt", ascending=False, na_position="last")
     is_cc   = cc_like_mask(cleaned)
 
-    # ── BANK ACCOUNTS: group all rows, pick last-known non-null balance ───────
     bank_rows = cleaned[~is_cc]
     for acct_num, grp in bank_rows.groupby("_acct", sort=False):
-        # grp is already sorted newest-first
         bal_numeric = (
             pd.to_numeric(grp["Balance"], errors="coerce").dropna()
             if "Balance" in grp.columns else pd.Series(dtype=float)
         )
         if not bal_numeric.empty:
-            # most-recent row that actually reported a balance
             bal_val  = float(bal_numeric.iloc[0])
             bal_idx  = bal_numeric.index[0]
             bal_date = _iso(grp.at[bal_idx, "date_dt"])
@@ -176,13 +161,8 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             },
         })
 
-    # credit cards: aggregate across all rows per card number
     cc_rows = cleaned[is_cc]
     for card_num, grp in cc_rows.groupby("_acct", sort=False):
-        # grp is newest-first
-
-        # credit_limit = MAX Avl Limit ever seen (historical peak = best proxy for true limit)
-        # balance      = LATEST non-null Avl Limit (current available balance)
         avl_numeric = (
             pd.to_numeric(grp["Avl Limit"], errors="coerce").dropna()
             if "Avl Limit" in grp.columns else pd.Series(dtype=float)
@@ -191,8 +171,7 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             pd.to_numeric(grp["Last Bill"], errors="coerce").dropna()
             if "Last Bill" in grp.columns else pd.Series(dtype=float)
         )
-        
-        # Calculate max historical limit by chronologically filling missing values
+
         if "Avl Limit" in grp.columns or "Last Bill" in grp.columns:
             temp = grp[["date_dt"]].copy()
             temp["Avl Limit"] = pd.to_numeric(grp.get("Avl Limit"), errors="coerce")
@@ -201,7 +180,7 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             temp["Avl Limit"] = temp["Avl Limit"].ffill().bfill().fillna(0)
             temp["Last Bill"] = temp["Last Bill"].ffill().bfill().fillna(0)
             temp["Limit"] = temp["Avl Limit"] + temp["Last Bill"]
-            
+
             if temp["Limit"].max() > 0:
                 max_sum = float(temp["Limit"].max())
                 max_avl_val = math.ceil(max_sum / 1000) * 1000
@@ -215,7 +194,6 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             max_avl_date = None
 
         if not avl_numeric.empty:
-            # balance: most-recent reported avl limit (iloc[0] = newest-first)
             latest_avl_val  = float(avl_numeric.iloc[0])
             latest_avl_idx  = avl_numeric.index[0]
             latest_avl_date = _iso(grp.at[latest_avl_idx, "date_dt"])
@@ -223,7 +201,6 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             latest_avl_val  = None
             latest_avl_date = None
 
-        # last_bill = most-recent non-null Last Bill
         if not bill_numeric.empty:
             last_bill_val  = float(bill_numeric.iloc[0])
             last_bill_idx  = bill_numeric.index[0]
@@ -232,7 +209,6 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             last_bill_val  = None
             last_bill_date = None
 
-        # utilisation = last_bill / credit_limit
         if last_bill_val is not None and max_avl_val and max_avl_val > 0:
             utilisation_pct = round(last_bill_val / max_avl_val, 4)
         else:
@@ -242,7 +218,7 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             "credit_card_number": card_num,
             "balance": {
                 "currency":   "INR",
-                "value":      latest_avl_val,   # most-recent available balance
+                "value":      latest_avl_val,
                 "updated_at": latest_avl_date,
             },
             "last_bill": {
@@ -252,7 +228,7 @@ def build_account_details(df: pd.DataFrame) -> tuple:
             },
             "credit_limit": {
                 "currency":   "INR",
-                "value":      max_avl_val,       # historical max = true limit proxy
+                "value":      max_avl_val,
                 "updated_at": max_avl_date,
             },
             "utilisation_pct": utilisation_pct,
@@ -261,9 +237,6 @@ def build_account_details(df: pd.DataFrame) -> tuple:
     return bank_details, card_details
 
 
-# =========================
-# 4) BASIC METRIC HELPERS
-# =========================
 def sum_amount(df: pd.DataFrame, mask: pd.Series) -> float:
     if df.empty:
         return 0.0
@@ -279,14 +252,10 @@ def safe_div(n: float, d: int, default=np.nan):
     return default if d == 0 else (n / d)
 
 
-# =========================
-# 5) CORE FEATURE BLOCKS
-# =========================
 def compute_spend_earn(df: pd.DataFrame) -> dict:
     """
-    FIX:
-    - spend/earn counts only include rows with Amount > 0
-      so if earn_total is 0 => earn_txn_count becomes 0
+    spend/earn counts only include rows with Amount > 0
+    so if earn_total is 0 => earn_txn_count becomes 0
     """
     if df.empty or "Transaction Type" not in df.columns or "Amount" not in df.columns:
         return {
@@ -379,7 +348,7 @@ def compute_cc_metrics(df: pd.DataFrame, num_credit_cards: int) -> dict:
     }
 
 
-def compute_top_channel(df: pd.DataFrame, num_credit_cards: int) -> str:
+def compute_top_channel(df: pd.DataFrame, num_credit_cards: int) -> str | None:
     """
     RULES:
     - top_channel cannot be 'Generic' if any other exists
@@ -392,7 +361,6 @@ def compute_top_channel(df: pd.DataFrame, num_credit_cards: int) -> str:
     df2 = df.copy()
 
     if num_credit_cards == 0:
-        # remove CC-like rows so "Card" doesn't win by volume even when it's fake/absent
         df2 = df2.loc[~cc_like_mask(df2)]
         df2 = df2[df2["Transaction Channel"] != "Card"]
 
@@ -407,9 +375,6 @@ def compute_top_channel(df: pd.DataFrame, num_credit_cards: int) -> str:
     return vc.index[0]
 
 
-# =========================
-# 6) INSIGHTS (ONE WINDOW)
-# =========================
 def build_insights(df: pd.DataFrame, force_num_credit_cards: int = None) -> dict:
     """
     OUTPUT FEATURES ONLY:
@@ -422,7 +387,6 @@ def build_insights(df: pd.DataFrame, force_num_credit_cards: int = None) -> dict
     """
     out = {}
 
-    # bank + cards (but DO NOT OUTPUT total_unique_account_numbers / remaining_accounts_est)
     num_bank_accounts = compute_num_bank_accounts(df)
     if force_num_credit_cards is not None:
         num_credit_cards = force_num_credit_cards
@@ -432,24 +396,14 @@ def build_insights(df: pd.DataFrame, force_num_credit_cards: int = None) -> dict
     out["num_bank_accounts"] = int(num_bank_accounts)
     out["num_credit_cards"] = int(num_credit_cards)
 
-    # spend/earn
     out.update(compute_spend_earn(df))
-
-    # UPI
     out.update(compute_upi_metrics(df))
-
-    # CC metrics (enforce your rule)
     out.update(compute_cc_metrics(df, out["num_credit_cards"]))
-
-    # top channel
     out["top_channel"] = compute_top_channel(df, out["num_credit_cards"])
 
     return out
 
 
-# =========================
-# 7) MONTHLY + OVERALL
-# =========================
 def monthly_and_overall_insights(txn_df: pd.DataFrame) -> dict:
     """
     Returns:
@@ -462,20 +416,16 @@ def monthly_and_overall_insights(txn_df: pd.DataFrame) -> dict:
     """
     df = prep_txn_df(txn_df)
 
-    # 1. Calculate overall insights first (ground truth for cards)
     overall = build_insights(df)
 
-    # 2. Slice for last month
     last_month_df = slice_last_month(df)
 
-    # 3. Apply HARD RULE: If overall CC count is 0, last month must be 0
     force_cc = None
     if overall.get("num_credit_cards", 0) == 0:
         force_cc = 0
 
     last_month = build_insights(last_month_df, force_num_credit_cards=force_cc)
 
-    # 4. Account / card details (latest balance + updated_at per unique number)
     bank_account_details, credit_card_details = build_account_details(df)
 
     return {

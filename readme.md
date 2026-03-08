@@ -1,1 +1,0 @@
-python main.py --input "D:\Sign3Project\Regex Notebooks\sms_parsing_input_data.csv"
