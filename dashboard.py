@@ -167,7 +167,7 @@ def render_l1(classified):
                 "body": truncate(c.get("body", ""), 100),
             })
         df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width="stretch", hide_index=True)
 
     # Expandable detail per SMS
     with st.expander("Detailed view (per SMS)"):
@@ -225,7 +225,7 @@ def render_l2(features):
                 for f in cat_features:
                     rows.append({k: v for k, v in f.items() if k not in exclude_keys})
                 df = pd.DataFrame(rows)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width="stretch", hide_index=True)
 
                 # Field completeness
                 all_keys = set()
@@ -241,7 +241,7 @@ def render_l2(features):
                         {"field": k, "filled": v, "total": len(cat_features), "pct": f"{v/len(cat_features)*100:.0f}%"}
                         for k, v in filled_counts.items()
                     ])
-                    st.dataframe(coverage_df, use_container_width=True, hide_index=True)
+                    st.dataframe(coverage_df, width="stretch", hide_index=True)
 
 
 def render_l3(insights):

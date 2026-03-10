@@ -9,9 +9,11 @@ import re
 
 def _safe_amount(text):
     """Extract first currency amount from text."""
-    m = re.search(r'(?:Rs|INR)\.?\s*([\d,]+(?:\.\d{1,2})?)', text, re.I)
+    m = re.search(r'(?:Rs|INR)\.?\s*([\d,]*\d+(?:\.\d{1,2})?)', text, re.I)
     if m:
-        return float(m.group(1).replace(',', ''))
+        cleaned = m.group(1).replace(',', '')
+        if cleaned:
+            return float(cleaned)
     return None
 
 

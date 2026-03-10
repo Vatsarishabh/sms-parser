@@ -13,12 +13,15 @@ from .classifier import get_classifier, SMSClassifier, ClassificationResult
 from .tagger import decode_sender_meta
 from .promotion import is_offer_or_marketing
 
+_SNAKE_SEP_RE = re.compile(r'[/\-\s]+')
+_SNAKE_CAMEL_RE = re.compile(r'([a-z0-9])([A-Z])')
+
 
 def _to_snake(value: str) -> str:
     """Convert a space/hyphen-delimited string to snake_case."""
     s = value.strip()
-    s = re.sub(r'[/\-\s]+', '_', s)
-    s = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s)
+    s = _SNAKE_SEP_RE.sub('_', s)
+    s = _SNAKE_CAMEL_RE.sub(r'\1_\2', s)
     return s.lower()
 
 
