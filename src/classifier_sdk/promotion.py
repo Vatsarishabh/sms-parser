@@ -1,11 +1,5 @@
 import re
 
-# -----------------------------
-# Offer/Marketing guard
-# -----------------------------
-# All patterns combined into single pre-compiled regexes for speed.
-# Previously each pattern was a separate re.search() call per message.
-
 _OFFER_RE = re.compile(
     r"\bpre[-\s]?qualified\b"
     r"|\bpre[-\s]?approved\b"
@@ -42,8 +36,7 @@ def is_offer_or_marketing(text: str) -> bool:
     t = text.lower()
 
     if _TXN_VERBS_RE.search(t):
-        # txn verbs present — only classify as offer if BOTH offer cues AND CTA exist
+        # Txn verbs present — need both offer cues AND CTA to avoid false positives on real transactions
         return bool(_OFFER_RE.search(t) and _NON_TXN_CTA_RE.search(t))
 
-    # no txn verbs — any offer marker is enough
     return bool(_OFFER_RE.search(t))

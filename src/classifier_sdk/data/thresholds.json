@@ -1,0 +1,13 @@
+{
+  "epfo": 0.57,
+  "insurance": 0.67,
+  "investments": 0.57,
+  "lending": 0.65,
+  "orders": 0.67,
+  "other": 0.73,
+  "otp": 0.65,
+  "promotions": 0.65,
+  "security_alert": 0.79,
+  "transactions": 0.39,
+  "utility_bills": 0.77
+}

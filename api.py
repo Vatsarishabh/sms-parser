@@ -1,40 +1,23 @@
-"""
-api.py
-------
-Thin FastAPI orchestrator for the 3-layer SMS parsing SDK.
-
-Endpoints:
-    POST /classify   → Layer 1: classify raw SMS
-    POST /features   → Layer 1 + 2: classify → extract features
-    POST /insights   → Layer 1 + 2 + 3: classify → features → insights
-    POST /analyze    → Alias for /insights (backward compat)
-    GET  /health     → Health check
-"""
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any
 
-from src.classifier_sdk import classify_sms
+from src.classifier_sdk import classify_sms, set_classifier
 from src.feature_store_sdk import extract_features
 from src.insights_sdk import generate_insights
 
 app = FastAPI(title="SMS Financial Parser API")
 
+# "rules" | "sklearn" | "ensemble"
+set_classifier("ensemble")
 
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
+
 class SMSRequest(BaseModel):
     sms_data: List[Dict[str, Any]]
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
 @app.post("/classify")
 def classify(request: SMSRequest):
-    """Layer 1: Classify raw SMS messages."""
     if not request.sms_data:
         raise HTTPException(status_code=400, detail="sms_data cannot be empty")
     try:
@@ -45,7 +28,6 @@ def classify(request: SMSRequest):
 
 @app.post("/features")
 def features(request: SMSRequest):
-    """Layer 1 + 2: Classify → Extract features."""
     if not request.sms_data:
         raise HTTPException(status_code=400, detail="sms_data cannot be empty")
     try:
@@ -57,7 +39,6 @@ def features(request: SMSRequest):
 
 @app.post("/insights")
 def insights(request: SMSRequest):
-    """Layer 1 + 2 + 3: Classify → Features → Insights."""
     if not request.sms_data:
         raise HTTPException(status_code=400, detail="sms_data cannot be empty")
     try:
@@ -70,7 +51,6 @@ def insights(request: SMSRequest):
 
 @app.post("/analyze")
 def analyze(request: SMSRequest):
-    """Full pipeline (alias for /insights)."""
     return insights(request)
 
 
