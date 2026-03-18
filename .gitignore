@@ -25,11 +25,10 @@ venv/
 # Output artifacts
 output/
 
-# Model & data artifacts (loaded from cloud in production)
-*.pkl
-*.joblib
-src/classifier_sdk/data/*.json
-!src/classifier_sdk/data/sender_map.json
+# Local copies of model artifacts (canonical source: models/ via LFS, later cloud)
+src/classifier_sdk/data/*.pkl
+src/classifier_sdk/data/*.joblib
+src/classifier_sdk/data/thresholds.json
 
 # Claude Code
 CLAUDE.md

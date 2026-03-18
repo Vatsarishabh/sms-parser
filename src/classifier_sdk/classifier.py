@@ -121,7 +121,7 @@ class RuleBasedClassifier(SMSClassifier):
         )
 
 
-_DATA_DIR = Path(__file__).parent / "data"
+_MODELS_DIR = Path(__file__).parents[2] / "models"
 _sklearn_cache: tuple | None = None
 
 
@@ -129,9 +129,9 @@ def _get_sklearn_artifacts():
     global _sklearn_cache
     if _sklearn_cache is None:
         import joblib
-        pipeline = joblib.load(_DATA_DIR / "sms_classifier.pkl")
-        mlb = joblib.load(_DATA_DIR / "label_binarizer.pkl")
-        with open(_DATA_DIR / "thresholds.json") as f:
+        pipeline = joblib.load(_MODELS_DIR / "sms_classifier.pkl")
+        mlb = joblib.load(_MODELS_DIR / "label_binarizer.pkl")
+        with open(_MODELS_DIR / "thresholds.json") as f:
             thresholds = json.load(f)
         threshold_array = np.array([thresholds[cls] for cls in mlb.classes_])
         _sklearn_cache = (pipeline, mlb, threshold_array)
