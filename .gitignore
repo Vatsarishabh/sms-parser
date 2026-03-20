@@ -24,6 +24,7 @@ venv/
 
 # Output artifacts
 output/
+experiments/
 
 # Local copies of model artifacts (canonical source: models/ via LFS, later cloud)
 src/classifier_sdk/data/*.pkl

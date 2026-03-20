@@ -9,7 +9,7 @@ from src.insights_sdk import generate_insights
 app = FastAPI(title="SMS Financial Parser API")
 
 # "rules" | "sklearn" | "ensemble"
-set_classifier("ensemble")
+set_classifier("sklearn")
 
 
 class SMSRequest(BaseModel):
